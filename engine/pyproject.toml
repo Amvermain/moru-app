@@ -1,6 +1,6 @@
 [project]
 name = "moru-engine"
-version = "0.7.4"
+version = "0.8.0"
 description = "Moru translation engine - DSPy-based Minecraft modpack translator"
 readme = "README.md"
 authors = [
