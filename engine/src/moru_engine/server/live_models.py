@@ -138,6 +138,13 @@ async def _fetch_openai_compatible(
     return [f"hosted_vllm/{m['id']}" for m in payload["data"]]
 
 
+async def _fetch_codex(api_key: str | None, api_base: str | None) -> list[str]:
+    """Codex reads its own OAuth grant; the api_key argument is unused."""
+    from ..cli_providers.codex import fetch_models
+
+    return await fetch_models()
+
+
 _FETCHERS: dict[str, Callable[[str | None, str | None], Awaitable[list[str]]]] = {
     "openai": _fetch_openai,
     "anthropic": _fetch_anthropic,
@@ -145,9 +152,14 @@ _FETCHERS: dict[str, Callable[[str | None, str | None], Awaitable[list[str]]]] =
     "deepseek": _fetch_deepseek,
     "xai": _fetch_xai,
     "openrouter": _fetch_openrouter,
+    "codex": _fetch_codex,
     "ollama": _fetch_ollama,
     "openai-compatible": _fetch_openai_compatible,
 }
+
+#: Providers with a real model-list endpoint. CLI subscriptions not listed
+#: here fall back to the static catalog in POST /providers/models.
+LIVE_MODEL_PROVIDERS: frozenset[str] = frozenset(_FETCHERS)
 
 
 async def fetch_live_models(

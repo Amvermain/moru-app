@@ -36,10 +36,15 @@ CODEX_CLIENT_VERSION = "0.144.1"
 #: moru rides the Codex subscription, so it keeps the CLI's value.
 ORIGINATOR = "codex_cli_rs"
 
+#: Codex SKU aliases. The GPT-5.6 Codex lineup is luna/terra/sol — there is
+#: no "gpt-5.6-codex" or "-codex-mini"; asking for a slug the plan cannot
+#: serve fails the whole run with a 400, so prefer `fetch_models()` and keep
+#: this map to the three ids the backend actually publishes.
 _MODEL_ALIASES = {
-    "default": "gpt-5.6-codex",
-    "codex": "gpt-5.6-codex",
-    "mini": "gpt-5.6-codex-mini",
+    "default": "gpt-5.6-terra",
+    "fast": "gpt-5.6-luna",
+    "balanced": "gpt-5.6-terra",
+    "best": "gpt-5.6-sol",
 }
 
 
@@ -237,7 +242,66 @@ def _check_status(status: int, body: str) -> None:
         )
     if status == 429:
         raise RuntimeError(f"Codex 사용량 한도에 도달했습니다. ({status}) {body[:300]}")
+    if status == 400 and "not supported" in body:
+        # The plan gates which SKUs it may call, so name the fix instead of
+        # echoing a bare 400 into a per-chunk failure.
+        raise RuntimeError(
+            "이 ChatGPT 계정에서 지원하지 않는 Codex 모델입니다. 번역 설정에서 "
+            "모델 목록을 새로고침한 뒤 다시 선택해 주세요. "
+            f"({status}) {body[:200]}"
+        )
     raise RuntimeError(f"Codex request failed ({status}): {body[:400]}")
+
+
+def _normalize_models(payload: object) -> list[str]:
+    """Codex discovery payload -> ordered LiteLLM model ids."""
+    if not isinstance(payload, dict):
+        return []
+    entries = payload.get("models") or payload.get("data") or []
+    if not isinstance(entries, list):
+        return []
+    ranked: list[tuple[float, str]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug") or entry.get("id")
+        if not isinstance(slug, str) or not slug:
+            continue
+        if str(entry.get("visibility") or "").lower() in ("hide", "hidden"):
+            continue
+        priority = entry.get("priority")
+        rank = float(priority) if isinstance(priority, (int, float)) else float("inf")
+        ranked.append((rank, slug))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [f"codex/{slug}" for _, slug in ranked]
+
+
+async def fetch_models() -> list[str]:
+    """Models this ChatGPT plan may actually call.
+
+    The backend gates SKUs per plan and rejects anything else with a 400
+    that kills the whole translate run, so the live list is the only
+    authority — a hardcoded guess is how "gpt-5.6-codex-mini" shipped.
+    """
+    creds = CODEX_STORE.credentials()
+    headers = build_headers(creds.access, creds.account_id, str(uuid.uuid4()))
+    headers["Accept"] = "application/json"
+    params = {"client_version": CODEX_CLIENT_VERSION}
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+        for path in ("/codex/models", "/models"):
+            try:
+                resp = await client.get(f"{BASE_URL}{path}", headers=headers, params=params)
+            except httpx.HTTPError:
+                continue
+            if resp.status_code != 200:
+                continue
+            try:
+                models = _normalize_models(resp.json())
+            except ValueError:
+                continue
+            if models:
+                return models
+    return []
 
 
 class CodexLLM(CustomLLM):

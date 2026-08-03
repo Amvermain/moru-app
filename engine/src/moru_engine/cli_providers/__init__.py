@@ -2,7 +2,7 @@
 
 Each is registered as a LiteLLM custom provider, so the whole engine
 addresses them with the same model-string contract as every hosted
-provider (``claude-code/claude-sonnet-4-6``, ``codex/gpt-5.6-codex``,
+provider (``claude-code/claude-sonnet-4-6``, ``codex/gpt-5.6-terra``,
 ``gemini-cli/gemini-3.5-flash``) and ``build_lm`` needs no special case.
 
 Auth is the CLI's own OAuth grant read off disk — no API key, no login
@@ -53,9 +53,12 @@ CLI_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "env": None,
         "auth": "cli",
         "login_hint": "codex login",
+        # Static fallback only — POST /providers/models asks the backend,
+        # which is the sole authority on what a given plan may call.
         "models": [
-            "codex/gpt-5.6-codex",
-            "codex/gpt-5.6-codex-mini",
+            "codex/gpt-5.6-luna",
+            "codex/gpt-5.6-terra",
+            "codex/gpt-5.6-sol",
         ],
     },
     {

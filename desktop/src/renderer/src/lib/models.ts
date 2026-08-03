@@ -143,9 +143,9 @@ export const PROVIDER_TIERS: Record<string, Record<PresetId, string>> = {
     best: "claude-code/claude-opus-4-8",
   },
   codex: {
-    fast: "codex/gpt-5.6-codex-mini",
-    balanced: "codex/gpt-5.6-codex",
-    best: "codex/gpt-5.6-codex",
+    fast: "codex/gpt-5.6-luna",
+    balanced: "codex/gpt-5.6-terra",
+    best: "codex/gpt-5.6-sol",
   },
   "gemini-cli": {
     fast: "gemini-cli/gemini-3.1-flash-lite",

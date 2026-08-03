@@ -53,7 +53,7 @@ from .jobs import (
     JobType,
     UnknownJobError,
 )
-from .live_models import fetch_live_models
+from .live_models import LIVE_MODEL_PROVIDERS, fetch_live_models
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -679,9 +679,10 @@ def create_app(
         # Desktop-saved key wins; otherwise fall back to the engine's env var
         # (matches has_key in GET /providers).
         env_name = entry["env"]
-        if body.provider in CLI_PROVIDER_IDS:
-            # Subscription surfaces with a fixed lineup — no /models endpoint
-            # to enumerate, so the catalog is authoritative.
+        if body.provider in CLI_PROVIDER_IDS and body.provider not in LIVE_MODEL_PROVIDERS:
+            # Subscription surfaces with no /models endpoint to enumerate,
+            # so the catalog is authoritative. Codex does publish one and
+            # gates SKUs per plan, so it goes down the live path below.
             return {
                 "provider": body.provider,
                 "models": provider_models(body.provider),

@@ -144,7 +144,7 @@ def test_claude_headers_carry_the_oauth_fingerprint() -> None:
 
 def test_codex_payload_omits_every_sampling_parameter() -> None:
     payload = codex.build_payload(
-        "gpt-5.6-codex",
+        "gpt-5.6-terra",
         [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "hi"},
@@ -161,17 +161,17 @@ def test_codex_payload_omits_every_sampling_parameter() -> None:
 
 
 def test_codex_defaults_to_low_reasoning_and_honors_overrides() -> None:
-    base = codex.build_payload("gpt-5.6-codex", [{"role": "user", "content": "x"}], {})
+    base = codex.build_payload("gpt-5.6-terra", [{"role": "user", "content": "x"}], {})
     assert base["reasoning"] == {"effort": "low"}
     high = codex.build_payload(
-        "gpt-5.6-codex", [{"role": "user", "content": "x"}], {"reasoning_effort": "high"}
+        "gpt-5.6-terra", [{"role": "user", "content": "x"}], {"reasoning_effort": "high"}
     )
     assert high["reasoning"] == {"effort": "high"}
 
 
 def test_codex_extra_system_prompts_become_developer_items() -> None:
     payload = codex.build_payload(
-        "codex",
+        "default",
         [
             {"role": "system", "content": "first"},
             {"role": "system", "content": "second"},
@@ -182,7 +182,61 @@ def test_codex_extra_system_prompts_become_developer_items() -> None:
     assert payload["instructions"] == "first"
     assert payload["input"][0]["role"] == "developer"
     assert payload["input"][0]["content"][0]["text"] == "second"
-    assert payload["model"] == "gpt-5.6-codex"  # alias resolved
+    assert payload["model"] == "gpt-5.6-terra"  # alias resolved
+
+
+def test_codex_aliases_resolve_to_real_gpt56_skus() -> None:
+    """The GPT-5.6 Codex lineup is luna/terra/sol.
+
+    Shipping an invented slug ("gpt-5.6-codex-mini") made the backend 400
+    every chunk with "model is not supported"; pin the real ids.
+    """
+    assert {codex.resolve_model(a) for a in ("default", "fast", "balanced", "best")} == {
+        "gpt-5.6-luna",
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+    }
+    # An unknown alias must pass through untouched, never silently remap.
+    assert codex.resolve_model("gpt-5.1-codex") == "gpt-5.1-codex"
+
+
+def test_codex_discovery_orders_by_priority_and_drops_hidden() -> None:
+    models = codex._normalize_models(
+        {
+            "models": [
+                {"slug": "gpt-5.6-sol", "priority": 3},
+                {"slug": "gpt-5.6-luna", "priority": 1},
+                {"slug": "internal-preview", "priority": 0, "visibility": "hidden"},
+                {"id": "gpt-5.6-terra", "priority": 2},
+                {"display_name": "no slug at all"},
+            ]
+        }
+    )
+    assert models == [
+        "codex/gpt-5.6-luna",
+        "codex/gpt-5.6-terra",
+        "codex/gpt-5.6-sol",
+    ]
+
+
+def test_codex_discovery_accepts_the_data_envelope() -> None:
+    assert codex._normalize_models({"data": [{"slug": "gpt-5.6-luna"}]}) == [
+        "codex/gpt-5.6-luna"
+    ]
+    assert codex._normalize_models({}) == []
+    assert codex._normalize_models("nope") == []
+
+
+def test_codex_unsupported_model_error_names_the_fix() -> None:
+    body = (
+        '{"detail":"The \'gpt-5.6-codex-mini\' model is not supported when '
+        'using Codex with a ChatGPT account."}'
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        codex._check_status(400, body)
+    message = str(excinfo.value)
+    assert "모델 목록을 새로고침" in message
+    assert not isinstance(excinfo.value, credentials.CliAuthError)
 
 
 def test_codex_stream_state_collects_text_and_usage() -> None:

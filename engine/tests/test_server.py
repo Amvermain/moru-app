@@ -957,16 +957,37 @@ def test_providers_expose_cli_subscriptions(
     assert entry["has_key"] == entry["connected"]
 
 
-def test_cli_provider_models_come_from_the_static_catalog(client: TestClient) -> None:
-    """No /models endpoint exists for a subscription surface."""
+@pytest.mark.parametrize("provider_id", ["claude-code", "gemini-cli"])
+def test_cli_providers_without_discovery_use_the_static_catalog(
+    client: TestClient, provider_id: str
+) -> None:
+    """These subscription surfaces publish no model-list endpoint."""
+    response = client.post(
+        "/providers/models", json={"provider": provider_id}, headers=AUTH
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "static"
+    assert body["error"] is None
+    assert body["models"]
+
+
+def test_codex_models_fall_back_to_static_when_the_cli_is_logged_out(
+    client: TestClient,
+) -> None:
+    """Codex DOES publish /codex/models, and its plan gates the SKUs.
+
+    Without a CLI login the live call cannot run, so the route degrades to
+    the static catalog and surfaces why — it must never invent a lineup.
+    """
     response = client.post(
         "/providers/models", json={"provider": "codex"}, headers=AUTH
     )
     assert response.status_code == 200
     body = response.json()
     assert body["source"] == "static"
-    assert body["error"] is None
-    assert "codex/gpt-5.6-codex" in body["models"]
+    assert "codex login" in (body["error"] or "")
+    assert "codex/gpt-5.6-terra" in body["models"]
 
 
 def test_provider_models_requires_token(client: TestClient) -> None:
