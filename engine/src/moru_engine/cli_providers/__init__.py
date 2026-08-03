@@ -15,11 +15,13 @@ import logging
 from typing import Any
 
 import litellm
+from litellm.utils import custom_llm_setup
 
 from .claude_code import ClaudeCodeLLM
 from .codex import CodexLLM
 from .credentials import STORES, CliAuthError
 from .gemini_cli import GeminiCliLLM
+from .wire import WIRE_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ __all__ = [
     "provider_models",
     "provider_status",
     "register_cli_providers",
+    "to_wire_model",
 ]
 
 #: Catalog entries in the same shape as the engine's hosted-provider table.
@@ -75,7 +78,24 @@ CLI_PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
     },
 )
 
+
 CLI_PROVIDER_IDS: frozenset[str] = frozenset(p["id"] for p in CLI_PROVIDER_CATALOG)
+
+
+def to_wire_model(model: str) -> str:
+    """Public CLI model id -> the form LiteLLM routes to our handler.
+
+    ``codex/gpt-5.6-luna`` -> ``codex/@/gpt-5.6-luna``. See ``wire`` for why
+    the marker is needed; non-CLI models pass through untouched so this is
+    safe to call on every model string.
+    """
+    provider, sep, rest = model.partition("/")
+    if not sep or provider not in CLI_PROVIDER_IDS:
+        return model
+    if rest.startswith(f"{WIRE_MARKER}/"):
+        return model
+    return f"{provider}/{WIRE_MARKER}/{rest}"
+
 
 _HANDLERS = {
     "claude-code": ClaudeCodeLLM,
@@ -87,7 +107,16 @@ _registered = False
 
 
 def register_cli_providers() -> None:
-    """Install the handlers into ``litellm.custom_provider_map`` once."""
+    """Install the handlers into LiteLLM once, for sync AND async calls.
+
+    Filling ``custom_provider_map`` alone is not enough. LiteLLM only folds
+    that map into ``provider_list`` inside ``custom_llm_setup()``, which its
+    *sync* wrapper calls — ``acompletion`` resolves the provider before any
+    of that runs. An unregistered prefix then falls through to LiteLLM's
+    name heuristics, so ``codex/gpt-5.6-luna`` was routed to OpenAI and
+    failed asking for OPENAI_API_KEY. Running the setup here means the very
+    first call resolves correctly whichever path it takes.
+    """
     global _registered
     if _registered:
         return
@@ -98,6 +127,7 @@ def register_cli_providers() -> None:
         litellm.custom_provider_map = litellm.custom_provider_map + [
             {"provider": provider, "custom_handler": handler()}
         ]
+    custom_llm_setup()
     _registered = True
     logger.debug("Registered CLI providers: %s", ", ".join(_HANDLERS))
 

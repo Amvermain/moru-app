@@ -23,6 +23,7 @@ import httpx
 from litellm import CustomLLM
 from litellm.types.utils import Choices, Message, ModelResponse, PromptTokensDetails, Usage
 
+from .wire import strip_wire_marker
 from .credentials import CODEX_STORE, CliAuthError
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ _MODEL_ALIASES = {
 
 
 def resolve_model(model: str) -> str:
+    """Wire id or CLI alias -> the slug this backend expects."""
+    model = strip_wire_marker(model)
     return _MODEL_ALIASES.get(model.strip().lower(), model)
 
 
@@ -217,7 +220,7 @@ def _fill_response(
             finish_reason=state.finish,
         )
     ]
-    model_response.model = f"codex/{model}"
+    model_response.model = f"codex/{resolve_model(model)}"
     usage = state.usage or {}
     cached = int((usage.get("input_tokens_details") or {}).get("cached_tokens") or 0)
     prompt = int(usage.get("input_tokens") or 0)

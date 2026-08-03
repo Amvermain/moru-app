@@ -16,7 +16,7 @@ import logging
 
 import dspy
 
-from ..cli_providers import register_cli_providers
+from ..cli_providers import register_cli_providers, to_wire_model
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,9 @@ def build_lm(
     if api_base:
         kwargs["api_base"] = api_base
     logger.info("Building LM: %s", model)
-    return dspy.LM(model, **kwargs)
+    # CLI providers only: keeps LiteLLM from hijacking a model whose bare
+    # name collides with its built-in OpenAI table. No-op for everything else.
+    return dspy.LM(to_wire_model(model), **kwargs)
 
 
 def configure_engine(lm: dspy.LM, *, json_adapter: bool = True) -> None:

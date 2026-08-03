@@ -464,3 +464,96 @@ def test_missing_credentials_raise_an_actionable_error(tmp_path, monkeypatch) ->
     with pytest.raises(credentials.CliAuthError) as excinfo:
         credentials.CodexStore().credentials()
     assert "codex login" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# LiteLLM routing
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_provider", "expected_model"),
+    [
+        ("claude-code/claude-sonnet-4-6", "claude-code", "claude-sonnet-4-6"),
+        ("codex/gpt-5.6-luna", "codex", "gpt-5.6-luna"),
+        ("gemini-cli/gemini-3.5-flash", "gemini-cli", "gemini-3.5-flash"),
+    ],
+)
+def test_models_route_to_the_cli_handler_without_a_prior_sync_call(
+    model: str, expected_provider: str, expected_model: str
+) -> None:
+    """Registration must reach LiteLLM's provider_list, not just the map.
+
+    LiteLLM folds custom_provider_map into provider_list inside
+    custom_llm_setup(), which only its SYNC wrapper calls. acompletion
+    resolves the provider before that, so an unregistered prefix fell
+    through to name heuristics: "codex/gpt-5.6-luna" went to OpenAI and
+    failed with "Missing credentials ... OPENAI_API_KEY". The engine
+    translates over the async path, so this is the path that matters.
+    """
+    from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider
+
+    from moru_engine.cli_providers import to_wire_model
+
+    resolved_model, provider, _, _ = get_llm_provider(model=to_wire_model(model))
+    assert provider == expected_provider
+    # The handler strips the wire marker back off before calling the API.
+    assert resolved_model.endswith(expected_model)
+
+
+def test_cli_providers_are_registered_in_litellms_provider_list() -> None:
+    import litellm
+
+    for provider in ("claude-code", "codex", "gemini-cli"):
+        assert provider in litellm.provider_list
+        assert provider in litellm._custom_providers
+
+
+def test_wire_marker_keeps_codex_out_of_litellms_openai_table() -> None:
+    """Codex SKUs share OpenAI's model names, and LiteLLM dispatches on those.
+
+    `completion()` tests `model in litellm.open_ai_chat_completion_models`
+    BEFORE it consults custom_provider_map, so a bare "codex/gpt-5.6-luna"
+    was handed to the OpenAI client and died on a missing OPENAI_API_KEY.
+    """
+    import litellm
+
+    from moru_engine.cli_providers import to_wire_model
+
+    # Precondition: these really are OpenAI names, so the hazard is real.
+    assert "gpt-5.6-luna" in litellm.open_ai_chat_completion_models
+
+    wire = to_wire_model("codex/gpt-5.6-luna")
+    assert wire == "codex/@/gpt-5.6-luna"
+    bare = wire.split("/", 1)[1]
+    assert bare not in litellm.open_ai_chat_completion_models
+
+    # Round-trips to the slug the backend expects.
+    assert codex.resolve_model(bare) == "gpt-5.6-luna"
+
+
+def test_to_wire_model_leaves_non_cli_models_alone() -> None:
+    from moru_engine.cli_providers import to_wire_model
+
+    for untouched in ("openai/gpt-5.6-luna", "ollama_chat/qwen3:8b", "gpt-4.1", ""):
+        assert to_wire_model(untouched) == untouched
+    # Idempotent: re-wrapping an already-wired id must not double the marker.
+    assert to_wire_model("codex/@/gpt-5.6-luna") == "codex/@/gpt-5.6-luna"
+
+
+def test_every_catalogued_cli_model_survives_the_wire_round_trip() -> None:
+    """No catalog entry may resolve to a name LiteLLM would hijack."""
+    import litellm
+
+    from moru_engine.cli_providers import CLI_PROVIDER_CATALOG, to_wire_model
+
+    resolvers = {
+        "claude-code": claude_code.resolve_model,
+        "codex": codex.resolve_model,
+        "gemini-cli": gemini_cli.resolve_model,
+    }
+    for entry in CLI_PROVIDER_CATALOG:
+        for public in entry["models"]:
+            bare = to_wire_model(public).split("/", 1)[1]
+            assert bare not in litellm.open_ai_chat_completion_models, public
+            assert resolvers[entry["id"]](bare) == public.split("/", 1)[1]

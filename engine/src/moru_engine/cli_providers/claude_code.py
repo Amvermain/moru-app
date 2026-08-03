@@ -23,6 +23,7 @@ import xxhash
 from litellm import CustomLLM
 from litellm.types.utils import Choices, Message, ModelResponse, PromptTokensDetails, Usage
 
+from .wire import strip_wire_marker
 from .credentials import CLAUDE_CODE_STORE, CliAuthError
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,8 @@ MAX_OUTPUT_TOKENS = 64000
 
 
 def resolve_model(model: str) -> str:
-    """Map a CLI alias to the wire model id; pass real ids through."""
+    """Wire id or CLI alias -> the slug this backend expects."""
+    model = strip_wire_marker(model)
     return _MODEL_ALIASES.get(model.strip().lower(), model)
 
 
@@ -239,7 +241,7 @@ def _fill_response(
             finish_reason=finish,
         )
     ]
-    model_response.model = f"claude-code/{model}"
+    model_response.model = f"claude-code/{resolve_model(model)}"
     usage = data.get("usage") or {}
     cache_read = int(usage.get("cache_read_input_tokens") or 0)
     prompt = int(usage.get("input_tokens") or 0) + cache_read

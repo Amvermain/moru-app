@@ -19,6 +19,7 @@ import httpx
 from litellm import CustomLLM
 from litellm.types.utils import Choices, Message, ModelResponse, PromptTokensDetails, Usage
 
+from .wire import strip_wire_marker
 from .credentials import CODE_ASSIST_ENDPOINT, GEMINI_CLI_STORE, CliAuthError, gemini_cli_headers
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,8 @@ _FINISH_REASONS = {
 
 
 def resolve_model(model: str) -> str:
+    """Wire id or CLI alias -> the slug this backend expects."""
+    model = strip_wire_marker(model)
     return _MODEL_ALIASES.get(model.strip().lower(), model)
 
 
@@ -162,7 +165,7 @@ def _fill_response(
             finish_reason=state.finish,
         )
     ]
-    model_response.model = f"gemini-cli/{model}"
+    model_response.model = f"gemini-cli/{resolve_model(model)}"
     usage = state.usage or {}
     cached = int(usage.get("cachedContentTokenCount") or 0)
     prompt = int(usage.get("promptTokenCount") or 0)
