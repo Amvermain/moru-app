@@ -502,6 +502,23 @@ components:
         models:
           type: array
           items: { type: string }
-        has_key: { type: boolean }
+        has_key:
+          type: boolean
+          description: >-
+            Ready to use. An API key is configured, or — when auth is "cli" —
+            the user's coding CLI is logged in and its grant is readable.
+        auth:
+          type: string
+          enum: [cli]
+          description: >-
+            Present only for coding-CLI subscriptions (Claude Code, OpenAI
+            Codex, Gemini CLI), which authenticate off the CLI's own OAuth
+            grant and never take an API key.
+        connected: { type: boolean }
+        login_hint:
+          type: string
+          nullable: true
+          description: Shell command that authenticates the CLI, e.g. "claude login".
+        account: { type: string, nullable: true }
 security:
   - sessionToken: []

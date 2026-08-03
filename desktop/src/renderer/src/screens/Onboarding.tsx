@@ -13,7 +13,7 @@ import { useTranslation } from "react-i18next";
 import { MoruLogo } from "@/components/MoruLogo";
 import { api } from "@/lib/api";
 import { moru } from "@/lib/bridge";
-import { LOCAL_PROVIDERS, PROVIDER_TIERS } from "@/lib/models";
+import { CLI_PROVIDERS, LOCAL_PROVIDERS, PROVIDER_TIERS } from "@/lib/models";
 import { useAccount } from "@/stores/account";
 import { useRouter } from "@/stores/router";
 import { useSettings } from "@/stores/settings";
@@ -30,6 +30,9 @@ const PROVIDER_TINT: Record<string, string> = {
   openrouter: "#6366F1",
   ollama: "#A78BFA",
   "openai-compatible": "#38BDF8",
+  "claude-code": "#C9704D",
+  codex: "#10A37F",
+  "gemini-cli": "#4285F4",
 };
 
 /** Mono step breadcrumb + title + description (mirrors Settings TabHeader). */
@@ -109,7 +112,10 @@ function KeyStep({ onSaved }: { onSaved: () => void }) {
   const providersQuery = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const providers = providersQuery.data ?? [];
   const selected = providers.find((p) => p.id === selectedId);
+  // Local providers swap the key field for a base URL; CLI subscriptions
+  // have neither — they only need their own CLI to be logged in.
   const selectedIsLocal = selected !== undefined && LOCAL_PROVIDERS.has(selected.id);
+  const selectedIsCli = selected !== undefined && CLI_PROVIDERS[selected.id] === true;
 
   const keyTest = useMutation({
     mutationFn: async ({ provider, key }: { provider: Provider; key: string }) => {
@@ -232,11 +238,15 @@ function KeyStep({ onSaved }: { onSaved: () => void }) {
                     <div className="mt-[2px] font-mono text-[10px] text-text3">
                       {savedIds.has(p.id)
                         ? t("onboarding.key.saved")
-                        : LOCAL_PROVIDERS.has(p.id)
-                          ? t("onboarding.key.localNoKey")
-                          : p.has_key
-                            ? t("onboarding.key.envKey")
-                            : t("onboarding.key.needsKey")}
+                        : CLI_PROVIDERS[p.id] === true
+                          ? p.has_key
+                            ? t("onboarding.key.cliReady")
+                            : t("onboarding.key.cliNeedsLogin")
+                          : LOCAL_PROVIDERS.has(p.id)
+                            ? t("onboarding.key.localNoKey")
+                            : p.has_key
+                              ? t("onboarding.key.envKey")
+                              : t("onboarding.key.needsKey")}
                     </div>
                   </div>
                   {connected && <div className="h-[6px] w-[6px] shrink-0 bg-accent" />}
@@ -247,7 +257,25 @@ function KeyStep({ onSaved }: { onSaved: () => void }) {
 
           {selected !== undefined && (
             <div className="mt-4 flex flex-col gap-2">
-              {selectedIsLocal ? (
+              {selectedIsCli ? (
+                <div className="border border-line2 bg-raised px-4 py-3">
+                  <div className="mb-2 font-mono text-[11px] leading-relaxed text-text3">
+                    {selected.has_key
+                      ? t("onboarding.key.cliConnectedDetail", {
+                          account: selected.account ?? selected.name,
+                        })
+                      : t("onboarding.key.cliLoginDetail", { cmd: selected.login_hint ?? "" })}
+                  </div>
+                  <button
+                    onClick={() => {
+                      void queryClient.invalidateQueries({ queryKey: ["providers"] });
+                    }}
+                    className="border border-accent px-3 py-2 text-[11px] font-semibold text-accent hover:bg-[rgba(61,220,132,0.08)]"
+                  >
+                    {t("onboarding.key.cliRecheck")}
+                  </button>
+                </div>
+              ) : selectedIsLocal ? (
                 <>
                   <div className="flex gap-2">
                     <input

@@ -21,7 +21,8 @@
     "ollamaModelsLoading": "Checking local models…",
     "ollamaEmpty": "No models found — make sure Ollama is running",
     "compatModelsTitle": "Models loaded on the server",
-    "compatEmpty": "No models found — check the server is running and the address (e.g. http://localhost:1234/v1)"
+    "compatEmpty": "No models found — check the server is running and the address (e.g. http://localhost:1234/v1)",
+    "needsCliLogin": "CLI login needed"
   },
   "preset": {
     "recommended": "Best pick",

@@ -58,6 +58,9 @@ export const PROVIDER_ORDER: readonly string[] = [
   "deepseek",
   "xai",
   "openrouter",
+  "claude-code",
+  "codex",
+  "gemini-cli",
   "ollama",
   "openai-compatible",
 ];
@@ -68,6 +71,28 @@ export const PROVIDER_ORDER: readonly string[] = [
  * per-token cost.
  */
 export const LOCAL_PROVIDERS: ReadonlySet<string> = new Set(["ollama", "openai-compatible"]);
+
+/**
+ * Coding-CLI subscriptions (Claude Code, OpenAI Codex, Gemini CLI). The
+ * engine rides the grant the user's own CLI already holds, so there is no
+ * key to enter and no per-token bill to estimate — the plan is already
+ * paid for. Unlike LOCAL_PROVIDERS they have a fixed lineup, so the normal
+ * tier cards apply and there is no base URL to configure.
+ */
+export const CLI_PROVIDERS: Record<string, true> = {
+  "claude-code": true,
+  codex: true,
+  "gemini-cli": true,
+};
+
+/**
+ * True when a provider never takes an API key — served locally or backed
+ * by a coding-CLI subscription. Two different reasons, one UI consequence,
+ * so the union is worth a name.
+ */
+export function isKeylessProvider(providerId: string): boolean {
+  return LOCAL_PROVIDERS.has(providerId) || CLI_PROVIDERS[providerId] === true;
+}
 
 /** LiteLLM model-string prefixes that differ from our provider ids. */
 const PREFIX_TO_PROVIDER: Record<string, string> = {
@@ -111,6 +136,21 @@ export const PROVIDER_TIERS: Record<string, Record<PresetId, string>> = {
     fast: "openrouter/deepseek/deepseek-v4-flash",
     balanced: "openrouter/anthropic/claude-haiku-4.5",
     best: "openrouter/anthropic/claude-sonnet-4.6",
+  },
+  "claude-code": {
+    fast: "claude-code/claude-haiku-4-5",
+    balanced: "claude-code/claude-sonnet-4-6",
+    best: "claude-code/claude-opus-4-8",
+  },
+  codex: {
+    fast: "codex/gpt-5.6-codex-mini",
+    balanced: "codex/gpt-5.6-codex",
+    best: "codex/gpt-5.6-codex",
+  },
+  "gemini-cli": {
+    fast: "gemini-cli/gemini-3.1-flash-lite",
+    balanced: "gemini-cli/gemini-3.5-flash",
+    best: "gemini-cli/gemini-3.1-pro-preview",
   },
 };
 

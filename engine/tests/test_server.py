@@ -936,6 +936,39 @@ def test_providers_include_openrouter(client: TestClient) -> None:
     assert all(m.startswith("openrouter/") for m in openrouter["models"])
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "prefix", "login_hint"),
+    [
+        ("claude-code", "claude-code/", "claude login"),
+        ("codex", "codex/", "codex login"),
+        ("gemini-cli", "gemini-cli/", "gemini"),
+    ],
+)
+def test_providers_expose_cli_subscriptions(
+    client: TestClient, provider_id: str, prefix: str, login_hint: str
+) -> None:
+    body = client.get("/providers", headers=AUTH).json()
+    entry = next(p for p in body if p["id"] == provider_id)
+    assert entry["auth"] == "cli"
+    assert entry["login_hint"] == login_hint
+    assert entry["models"]
+    assert all(m.startswith(prefix) for m in entry["models"])
+    # has_key tracks the CLI login, not an env var, and the two agree.
+    assert entry["has_key"] == entry["connected"]
+
+
+def test_cli_provider_models_come_from_the_static_catalog(client: TestClient) -> None:
+    """No /models endpoint exists for a subscription surface."""
+    response = client.post(
+        "/providers/models", json={"provider": "codex"}, headers=AUTH
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "static"
+    assert body["error"] is None
+    assert "codex/gpt-5.6-codex" in body["models"]
+
+
 def test_provider_models_requires_token(client: TestClient) -> None:
     response = client.post("/providers/models", json={"provider": "openai"})
     assert response.status_code == 401

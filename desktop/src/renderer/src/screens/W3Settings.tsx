@@ -13,6 +13,7 @@ import { api } from "@/lib/api";
 import { moru } from "@/lib/bridge";
 import { formatCompact, formatInt, formatUsd } from "@/lib/format";
 import {
+  CLI_PROVIDERS,
   LOCAL_PROVIDERS,
   PRESET_IDS,
   PROVIDER_ORDER,
@@ -70,6 +71,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   deepseek: "DeepSeek",
   xai: "xAI",
   openrouter: "OpenRouter",
+  "claude-code": "Claude Code",
+  codex: "Codex",
+  "gemini-cli": "Gemini CLI",
   ollama: "Ollama",
   "openai-compatible": "OpenAI Compatible",
 };
@@ -456,9 +460,11 @@ export function W3Settings() {
               providersQuery.data?.find((p) => p.id === id)?.name ?? PROVIDER_LABELS[id] ?? id;
             const status = isConnected
               ? t("w3.provider.connected")
-              : LOCAL_PROVIDERS.has(id)
-                ? t("w3.provider.unreachable")
-                : t("w3.provider.needsKey");
+              : CLI_PROVIDERS[id] === true
+                ? t("w3.provider.needsCliLogin")
+                : LOCAL_PROVIDERS.has(id)
+                  ? t("w3.provider.unreachable")
+                  : t("w3.provider.needsKey");
             return (
               <button
                 key={id}

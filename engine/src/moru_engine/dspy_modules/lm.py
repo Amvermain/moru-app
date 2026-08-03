@@ -3,6 +3,11 @@
 Any provider is addressed by a single LiteLLM model string
 ("openai/gpt-5.6-luna", "anthropic/...", "ollama_chat/qwen3:8b", ...);
 no per-provider adapter code is needed.
+
+The locally installed coding CLIs (Claude Code, OpenAI Codex, Gemini CLI)
+join that contract through LiteLLM custom providers registered at import —
+"claude-code/...", "codex/...", "gemini-cli/..." resolve to handlers that
+ride the CLI's own OAuth grant instead of an API key.
 """
 
 from __future__ import annotations
@@ -11,7 +16,11 @@ import logging
 
 import dspy
 
+from ..cli_providers import register_cli_providers
+
 logger = logging.getLogger(__name__)
+
+register_cli_providers()
 
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_MAX_TOKENS = 8192

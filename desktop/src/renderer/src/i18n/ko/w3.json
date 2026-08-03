@@ -21,7 +21,8 @@
     "ollamaModelsLoading": "로컬 모델 확인 중…",
     "ollamaEmpty": "모델을 찾지 못했어요 — Ollama가 실행 중인지 확인해 주세요",
     "compatModelsTitle": "서버에 로드된 모델",
-    "compatEmpty": "모델을 찾지 못했어요 — 서버 실행 여부와 주소를 확인해 주세요 (예: http://localhost:1234/v1)"
+    "compatEmpty": "모델을 찾지 못했어요 — 서버 실행 여부와 주소를 확인해 주세요 (예: http://localhost:1234/v1)",
+    "needsCliLogin": "CLI 로그인 필요"
   },
   "preset": {
     "recommended": "추천",

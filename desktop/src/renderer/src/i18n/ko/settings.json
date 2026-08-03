@@ -38,7 +38,12 @@
     "compatKeyPlaceholder": "(선택) 서버가 API 키를 요구할 때만 입력",
     "loading": "프로바이더 목록 불러오는 중…",
     "loadError": "프로바이더 목록을 불러오지 못했습니다",
-    "empty": "사용 가능한 프로바이더가 없습니다"
+    "empty": "사용 가능한 프로바이더가 없습니다",
+    "cliSubscription": "구독",
+    "cliConnected": "연결됨",
+    "cliDisconnected": "로그인 필요",
+    "cliReady": "설치된 CLI의 로그인 정보를 그대로 사용합니다. API 키가 필요 없어요.",
+    "cliLoginHint": "터미널에서 `{{cmd}}`로 로그인하면 바로 사용할 수 있어요."
   },
   "general": {
     "title": "앱 기본 설정",

@@ -29,6 +29,12 @@ from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect
 
 from .. import __version__
+from ..cli_providers import (
+    CLI_PROVIDER_CATALOG,
+    CLI_PROVIDER_IDS,
+    provider_models,
+    provider_status,
+)
 from ..community import sync_community
 from ..dspy_modules import build_lm
 from ..pipeline import (
@@ -139,7 +145,7 @@ _PROVIDER_CATALOG: tuple[dict[str, Any], ...] = (
         "env": None,
         "models": [],
     },
-)
+) + CLI_PROVIDER_CATALOG
 
 
 class JobRequest(BaseModel):
@@ -608,15 +614,25 @@ def create_app(
 
     @api.get("/providers")
     async def providers() -> list[dict[str, Any]]:
-        return [
-            {
+        out: list[dict[str, Any]] = []
+        for p in _PROVIDER_CATALOG:
+            entry: dict[str, Any] = {
                 "id": p["id"],
                 "name": p["name"],
                 "models": list(p["models"]),
                 "has_key": p["env"] is None or bool(os.environ.get(p["env"])),
             }
-            for p in _PROVIDER_CATALOG
-        ]
+            if p["id"] in CLI_PROVIDER_IDS:
+                # No API key exists for these: "ready" means the user's own
+                # CLI is logged in and its grant is readable.
+                status = await asyncio.to_thread(provider_status, p["id"])
+                entry["auth"] = "cli"
+                entry["has_key"] = bool(status.get("connected"))
+                entry["connected"] = bool(status.get("connected"))
+                entry["login_hint"] = status.get("login_hint")
+                entry["account"] = status.get("email")
+            out.append(entry)
+        return out
 
     @api.post("/providers/test")
     async def providers_test(body: ProviderTestRequest) -> dict[str, Any]:
@@ -663,6 +679,15 @@ def create_app(
         # Desktop-saved key wins; otherwise fall back to the engine's env var
         # (matches has_key in GET /providers).
         env_name = entry["env"]
+        if body.provider in CLI_PROVIDER_IDS:
+            # Subscription surfaces with a fixed lineup — no /models endpoint
+            # to enumerate, so the catalog is authoritative.
+            return {
+                "provider": body.provider,
+                "models": provider_models(body.provider),
+                "source": "static",
+                "error": None,
+            }
         api_key = body.api_key or (os.environ.get(env_name) if env_name else None)
         try:
             models = await fetch_live_models(

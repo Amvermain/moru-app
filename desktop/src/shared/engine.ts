@@ -106,7 +106,16 @@ export interface Provider {
   id: string;
   name: string;
   models: string[];
+  /** Ready to use: an API key is present, or — for `auth: "cli"` — the
+   *  user's coding CLI is logged in. */
   has_key: boolean;
+  /** Present only for coding-CLI subscriptions (Claude Code, Codex, Gemini CLI). */
+  auth?: "cli";
+  connected?: boolean;
+  /** Shell command that authenticates the CLI, e.g. "claude login". */
+  login_hint?: string | null;
+  /** Signed-in account, when the CLI's credential exposes one. */
+  account?: string | null;
 }
 
 /** POST /providers/models - live model listing with static-catalog fallback. */

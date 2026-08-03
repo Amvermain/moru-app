@@ -14,14 +14,16 @@
  *   from OpenRouter fall back to the static list-price table, which is
  *   kept at-or-above the providers' published rates.
  *
- * Local providers (Ollama, OpenAI-compatible servers) are free.
+ * Local providers (Ollama, OpenAI-compatible servers) are free, as are the
+ * coding-CLI subscriptions (Claude Code, Codex, Gemini CLI) — those bill
+ * against a plan the user already pays for, not per token.
  * All rates are normalized to USD per 1M tokens.
  */
 
 import { useQuery } from "@tanstack/react-query";
 
 import { moru } from "./bridge";
-import { LOCAL_PROVIDERS, MODEL_PRICES, providerIdOf, type ModelPrice } from "./models";
+import { MODEL_PRICES, isKeylessProvider, providerIdOf, type ModelPrice } from "./models";
 
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const CACHE_KEY = "moru:openrouter-pricing";
@@ -197,7 +199,7 @@ function priceCandidates(
  * return null.
  */
 export function priceForModel(table: PricingTable | null, model: string): LivePrice | null {
-  if (LOCAL_PROVIDERS.has(providerIdOf(model))) {
+  if (isKeylessProvider(providerIdOf(model))) {
     return { input: 0, output: 0, cacheRead: 0, source: "free" };
   }
   const { live, staticPrice } = priceCandidates(table, model);
@@ -221,7 +223,7 @@ export function estimatePriceForModel(
   table: PricingTable | null,
   model: string,
 ): LivePrice | null {
-  if (LOCAL_PROVIDERS.has(providerIdOf(model))) {
+  if (isKeylessProvider(providerIdOf(model))) {
     return { input: 0, output: 0, cacheRead: 0, source: "free" };
   }
   const { live, staticPrice } = priceCandidates(table, model);

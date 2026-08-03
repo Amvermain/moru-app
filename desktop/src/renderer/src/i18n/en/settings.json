@@ -38,7 +38,12 @@
     "compatKeyPlaceholder": "(optional) only if your server requires an API key",
     "loading": "Loading providers…",
     "loadError": "Failed to load providers",
-    "empty": "No providers available"
+    "empty": "No providers available",
+    "cliSubscription": "Subscription",
+    "cliConnected": "Connected",
+    "cliDisconnected": "Login needed",
+    "cliReady": "Runs on your installed CLI's existing login — no API key required.",
+    "cliLoginHint": "Run `{{cmd}}` in a terminal to connect."
   },
   "general": {
     "title": "App preferences",

@@ -12,7 +12,7 @@ import { useTranslation } from "react-i18next";
 import { api } from "@/lib/api";
 import { moru } from "@/lib/bridge";
 import { formatInt } from "@/lib/format";
-import { LOCAL_PROVIDERS, modelDisplayName } from "@/lib/models";
+import { CLI_PROVIDERS, isKeylessProvider, modelDisplayName } from "@/lib/models";
 import { WEB_URL, WebApiError, web } from "@/lib/web";
 import { useAccount } from "@/stores/account";
 import { useRouter } from "@/stores/router";
@@ -33,6 +33,9 @@ const PROVIDER_DECOR: Record<string, { bg: string; ink?: string; initial?: strin
   openrouter: { bg: "#6366F1", keyPrefix: "sk-or-..." },
   ollama: { bg: "#A78BFA", ink: "#0A100D", initial: "L" },
   "openai-compatible": { bg: "#38BDF8", ink: "#0A100D", initial: "C" },
+  "claude-code": { bg: "#C9704D", initial: "C" },
+  codex: { bg: "#10A37F", initial: "X" },
+  "gemini-cli": { bg: "#4285F4", initial: "G" },
 };
 
 function providerDecor(provider: Provider): { bg: string; ink: string; initial: string; keyPrefix?: string } {
@@ -297,6 +300,75 @@ function ProviderCard({
             {t("settings.models.envKeyHint")}
           </div>
         )}
+      </div>
+
+      <TestStatusLine status={testStatusOf(test)} />
+    </div>
+  );
+}
+
+/**
+ * Coding-CLI subscription card (Claude Code, Codex, Gemini CLI). There is
+ * no key field: the engine rides the OAuth grant the CLI already stores,
+ * so the card reports whether that grant is readable and names the command
+ * that fixes it when it is not.
+ */
+function CliProviderCard({ provider }: { provider: Provider }) {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const decor = providerDecor(provider);
+  const connected = provider.connected ?? provider.has_key;
+
+  const test = useMutation({
+    mutationFn: () => api.testProvider(provider.id, undefined, provider.models[0]),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
+  });
+
+  return (
+    <div className="relative mb-3 overflow-hidden border border-line2 bg-raised">
+      <div className="flex items-center gap-[14px] border-b border-line2 px-5 py-4">
+        <div
+          className="flex h-8 w-8 shrink-0 items-center justify-center font-mono text-sm font-bold"
+          style={{ background: decor.bg, color: decor.ink }}
+        >
+          {decor.initial}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="mb-[2px] flex items-center gap-2">
+            <span className="text-sm font-bold text-text">{provider.name}</span>
+            <span className="bg-[rgba(61,220,132,0.08)] px-[5px] py-[2px] font-mono text-[10px] text-accent">
+              {t("settings.models.cliSubscription")}
+            </span>
+          </div>
+          <div className="truncate font-mono text-[11px] text-text3">
+            {provider.models.map(modelDisplayName).join(", ")}
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div
+            className={`font-mono text-xs font-bold ${connected ? "text-accent" : "text-text3"}`}
+          >
+            {connected ? t("settings.models.cliConnected") : t("settings.models.cliDisconnected")}
+          </div>
+          {connected && provider.account !== null && provider.account !== undefined && (
+            <div className="font-mono text-[10px] text-text3">{provider.account}</div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-[10px] px-5 py-4">
+        <div className="min-w-0 flex-1 font-mono text-[11px] text-text3">
+          {connected
+            ? t("settings.models.cliReady")
+            : t("settings.models.cliLoginHint", { cmd: provider.login_hint ?? "" })}
+        </div>
+        <button
+          className="shrink-0 border border-accent bg-transparent px-3 py-2 text-[11px] font-semibold text-accent hover:bg-[rgba(61,220,132,0.08)] disabled:cursor-not-allowed disabled:opacity-40"
+          disabled={test.isPending}
+          onClick={() => test.mutate()}
+        >
+          {t("settings.models.test")}
+        </button>
       </div>
 
       <TestStatusLine status={testStatusOf(test)} />
@@ -598,7 +670,7 @@ function ModelsTab() {
             </div>
           )}
           {providers
-            .filter((p) => !LOCAL_PROVIDERS.has(p.id))
+            .filter((p) => !isKeylessProvider(p.id))
             .map((p) => (
               <ProviderCard
                 key={p.id}
@@ -606,6 +678,11 @@ function ModelsTab() {
                 savedKey={savedKeys[p.id] ?? null}
                 onSavedKeyChange={(key) => setSavedKeys((prev) => ({ ...prev, [p.id]: key }))}
               />
+            ))}
+          {providers
+            .filter((p) => CLI_PROVIDERS[p.id] === true)
+            .map((p) => (
+              <CliProviderCard key={p.id} provider={p} />
             ))}
           <OllamaCard provider={providers.find((p) => p.id === "ollama")} />
           <CompatCard

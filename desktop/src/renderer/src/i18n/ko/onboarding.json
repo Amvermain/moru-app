@@ -31,7 +31,12 @@
     "connectOk": "서버 연결됨 — 모델 {{n}}개 감지",
     "connectFail": "서버에 연결하지 못했습니다 — 실행 여부와 주소를 확인해 주세요",
     "later": "나중에 설정",
-    "hint": "설정 → 모델 · API 키에서 언제든 추가하거나 바꿀 수 있습니다"
+    "hint": "설정 → 모델 · API 키에서 언제든 추가하거나 바꿀 수 있습니다",
+    "cliReady": "CLI 로그인됨",
+    "cliNeedsLogin": "CLI 로그인 필요",
+    "cliConnectedDetail": "{{account}} 계정으로 연결되어 있어요. 구독 요금제를 그대로 쓰므로 API 키가 필요 없습니다.",
+    "cliLoginDetail": "터미널에서 `{{cmd}}`를 실행해 로그인한 뒤 아래 버튼으로 다시 확인해 주세요.",
+    "cliRecheck": "다시 확인"
   },
   "account": {
     "title": "Discord 로그인 (선택)",

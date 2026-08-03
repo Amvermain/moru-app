@@ -830,10 +830,12 @@ dependencies = [
     { name = "dspy" },
     { name = "fastapi" },
     { name = "ftb-snbt-lib" },
+    { name = "httpx" },
     { name = "platformdirs" },
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "xxhash" },
 ]
 
 [package.dev-dependencies]
@@ -854,10 +856,12 @@ requires-dist = [
     { name = "dspy", specifier = ">=3.2.1" },
     { name = "fastapi", specifier = ">=0.139.0" },
     { name = "ftb-snbt-lib", specifier = ">=0.4.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "platformdirs", specifier = ">=4.10.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.51.0" },
+    { name = "xxhash", specifier = ">=3.5.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -31,7 +31,12 @@
     "connectOk": "Server connected — {{n}} models detected",
     "connectFail": "Could not reach the server — check it is running and the address",
     "later": "Set up later",
-    "hint": "You can add or change keys anytime in Settings → Models · API keys"
+    "hint": "You can add or change keys anytime in Settings → Models · API keys",
+    "cliReady": "CLI signed in",
+    "cliNeedsLogin": "CLI login needed",
+    "cliConnectedDetail": "Connected as {{account}}. Runs on your existing subscription — no API key needed.",
+    "cliLoginDetail": "Run `{{cmd}}` in a terminal, then re-check below.",
+    "cliRecheck": "Re-check"
   },
   "account": {
     "title": "Discord sign-in (optional)",
