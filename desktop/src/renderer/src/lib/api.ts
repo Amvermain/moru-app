@@ -79,9 +79,16 @@ export const api = {
 
   scanResult: (jobId: string) => request<ScanResult>(`/scan/${jobId}/result`),
 
-  entries: (jobId: string, filter: "all" | "failed" | "warning" | "modified", page: number, pageSize = 100) =>
+  entries: (
+    jobId: string,
+    filter: "all" | "failed" | "warning" | "modified",
+    page: number,
+    pageSize = 100,
+    search = "",
+  ) =>
     request<EntryPage>(
-      `/translate/${jobId}/entries?filter=${filter}&page=${page}&page_size=${pageSize}`,
+      `/translate/${jobId}/entries?filter=${filter}&page=${page}&page_size=${pageSize}` +
+        (search === "" ? "" : `&search=${encodeURIComponent(search)}`),
     ),
   patchEntry: (jobId: string, key: string, translatedText: string) =>
     request<Entry>(`/translate/${jobId}/entries/${encodeURIComponent(key)}`, {

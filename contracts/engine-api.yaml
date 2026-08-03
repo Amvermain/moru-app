@@ -117,6 +117,13 @@ paths:
         - name: page_size
           in: query
           schema: { type: integer, maximum: 500, default: 100 }
+        - name: search
+          in: query
+          description: >-
+            Case-insensitive substring match over key, source and translated
+            text. Applied to the whole filtered set BEFORE pagination, so the
+            review screen can find entries on any page.
+          schema: { type: string, maxLength: 200 }
       responses:
         "200":
           content:

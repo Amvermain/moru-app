@@ -20,7 +20,13 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from moru_engine import __version__
-from moru_engine.pipeline import PipelineConfig, PipelineResult, PipelineStats
+from moru_engine.pipeline import (
+    EntryResult,
+    EntryStatus,
+    PipelineConfig,
+    PipelineResult,
+    PipelineStats,
+)
 from moru_engine.server import create_app
 from moru_engine.server.jobs import JobRecord, JobStatus, JobType
 from moru_engine.server.live_models import fetch_live_models
@@ -723,6 +729,115 @@ def test_patch_entry_unknown_job_is_404(client: TestClient) -> None:
 def test_entries_unknown_job_is_404(client: TestClient) -> None:
     response = client.get("/translate/nope/entries", headers=AUTH)
     assert response.status_code == 404
+
+
+def _populate_entries(record: JobRecord, count: int) -> None:
+    """Fill a translate result with `count` synthetic review entries."""
+    record.result.entries = [
+        EntryResult(
+            key=f"item.mod.entry_{i}",
+            file="lang/en_us.json",
+            source_text=f"Source text {i}",
+            translated_text=f"번역 {i}",
+            status=EntryStatus.PASSED,
+        )
+        for i in range(count)
+    ]
+
+
+def test_entry_search_spans_every_page(
+    client: TestClient, done_translate_job: JobRecord
+) -> None:
+    """A match on page 3 must be findable from page 1.
+
+    The review screen used to filter only the rows it had already fetched,
+    so anything past the first page was invisible to search.
+    """
+    _populate_entries(done_translate_job, 250)
+    # entry_240 sits on page 3 of the unfiltered list (page size 100).
+    response = client.get(
+        f"/translate/{done_translate_job.id}/entries",
+        params={"search": "entry_240", "page": 1},
+        headers=AUTH,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert [e["key"] for e in body["entries"]] == ["item.mod.entry_240"]
+
+
+def test_entry_search_is_case_insensitive_across_all_three_fields(
+    client: TestClient, done_translate_job: JobRecord
+) -> None:
+    _populate_entries(done_translate_job, 5)
+    done_translate_job.result.entries[2].source_text = "Netherite Ingot"
+    done_translate_job.result.entries[3].translated_text = "네더라이트 주괴"
+
+    def search(term: str) -> list[str]:
+        response = client.get(
+            f"/translate/{done_translate_job.id}/entries",
+            params={"search": term},
+            headers=AUTH,
+        )
+        assert response.status_code == 200
+        return [e["key"] for e in response.json()["entries"]]
+
+    assert search("NETHERITE") == ["item.mod.entry_2"]  # source, case-folded
+    assert search("주괴") == ["item.mod.entry_3"]  # translation
+    assert search("entry_1") == ["item.mod.entry_1"]  # key
+
+
+def test_entry_search_paginates_the_narrowed_set(
+    client: TestClient, done_translate_job: JobRecord
+) -> None:
+    _populate_entries(done_translate_job, 250)
+    # "entry_1" matches entry_1, entry_1x, entry_1xx -> 111 rows.
+    first = client.get(
+        f"/translate/{done_translate_job.id}/entries",
+        params={"search": "entry_1", "page": 1},
+        headers=AUTH,
+    ).json()
+    assert first["total"] == 111
+    assert len(first["entries"]) == 100
+    second = client.get(
+        f"/translate/{done_translate_job.id}/entries",
+        params={"search": "entry_1", "page": 2},
+        headers=AUTH,
+    ).json()
+    assert second["total"] == 111
+    assert len(second["entries"]) == 11
+
+
+def test_entry_search_composes_with_the_status_filter(
+    client: TestClient, done_translate_job: JobRecord
+) -> None:
+    _populate_entries(done_translate_job, 20)
+    done_translate_job.result.entries[7].status = EntryStatus.FAILED
+    response = client.get(
+        f"/translate/{done_translate_job.id}/entries",
+        params={"filter": "failed", "search": "entry_7"},
+        headers=AUTH,
+    )
+    assert [e["key"] for e in response.json()["entries"]] == ["item.mod.entry_7"]
+
+    miss = client.get(
+        f"/translate/{done_translate_job.id}/entries",
+        params={"filter": "failed", "search": "entry_8"},
+        headers=AUTH,
+    )
+    assert miss.json()["total"] == 0
+
+
+def test_blank_search_returns_the_whole_page(
+    client: TestClient, done_translate_job: JobRecord
+) -> None:
+    _populate_entries(done_translate_job, 30)
+    body = client.get(
+        f"/translate/{done_translate_job.id}/entries",
+        params={"search": "   "},
+        headers=AUTH,
+    ).json()
+    assert body["total"] == 30
 
 
 def test_entries_on_scan_job_is_404(

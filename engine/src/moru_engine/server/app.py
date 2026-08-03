@@ -474,11 +474,27 @@ def create_app(
         filter: Literal["all", "failed", "warning", "modified"] = "all",
         page: int = Query(1, ge=1),
         page_size: int = Query(100, ge=1, le=500),
+        search: str = Query("", max_length=200),
     ) -> dict[str, Any]:
+        """One page of review entries.
+
+        `search` filters across the WHOLE result set before paginating, so
+        the review screen can find an entry that lives on any page — a
+        client-side filter would only ever see the 100 rows it fetched.
+        """
         _, result = _get_pipeline_result(job_id)
         entries = result.entries
         if filter != "all":
             entries = [e for e in entries if e.status.value == filter]
+        needle = search.strip().casefold()
+        if needle:
+            entries = [
+                e
+                for e in entries
+                if needle in e.key.casefold()
+                or needle in (e.source_text or "").casefold()
+                or needle in (e.translated_text or "").casefold()
+            ]
         start = (page - 1) * page_size
         page_entries = entries[start : start + page_size]
         return {

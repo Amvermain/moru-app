@@ -266,6 +266,8 @@ export function W5Review() {
   const [filter, setFilter] = useState<EntryFilter>("all");
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  // Debounced copy of `search`; drives the query so typing stays snappy.
+  const [query, setQuery] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [colorPreview, setColorPreview] = useState(false);
@@ -275,18 +277,33 @@ export function W5Review() {
   const editRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
+  // Search runs on the engine so it spans the whole result set. Filtering
+  // `entries` here would only ever see the PAGE_SIZE rows already fetched.
+  useEffect(() => {
+    const id = setTimeout(() => setQuery(search.trim()), 200);
+    return () => clearTimeout(id);
+  }, [search]);
+
+  // A narrowed result set renumbers pages; page 7 of the old set is
+  // meaningless against the new one.
+  useEffect(() => {
+    setPage(1);
+    setSelectedKey(null);
+  }, [query]);
+
   const pageQuery = useQuery({
-    queryKey: ["w5", translateJobId, "entries", filter, page],
-    queryFn: () => api.entries(translateJobId as string, filter, page, PAGE_SIZE),
+    queryKey: ["w5", translateJobId, "entries", filter, page, query],
+    queryFn: () => api.entries(translateJobId as string, filter, page, PAGE_SIZE, query),
     enabled: translateJobId !== null,
     placeholderData: keepPreviousData,
   });
 
   const countQueries = useQueries({
     queries: FILTERS.map((f) => ({
-      queryKey: ["w5", translateJobId, "count", f],
-      queryFn: () => api.entries(translateJobId as string, f, 1, 1),
+      queryKey: ["w5", translateJobId, "count", f, query],
+      queryFn: () => api.entries(translateJobId as string, f, 1, 1, query),
       enabled: translateJobId !== null,
+      placeholderData: keepPreviousData,
     })),
   });
   const counts = useMemo(() => {
@@ -300,16 +317,8 @@ export function W5Review() {
   const entries = pageQuery.data?.entries ?? [];
   const total = pageQuery.data?.total ?? 0;
 
-  const rows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (q === "") return entries;
-    return entries.filter(
-      (e) =>
-        e.key.toLowerCase().includes(q) ||
-        e.source_text.toLowerCase().includes(q) ||
-        e.translated_text.toLowerCase().includes(q),
-    );
-  }, [entries, search]);
+  // Already filtered server-side by `query`; nothing left to narrow here.
+  const rows = entries;
 
   const selected: Entry | null = rows.find((e) => e.key === selectedKey) ?? rows[0] ?? null;
 
