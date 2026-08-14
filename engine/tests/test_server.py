@@ -313,6 +313,15 @@ def _install_translate_record(
             target_locale="ko_kr",
             model="openai/gpt-4o-mini",
         ),
+        entries=[
+            EntryResult(
+                key="key.hello",
+                file="somemod/lang/en_us.json",
+                source_text="Hello",
+                translated_text="안녕",
+                status=EntryStatus.PASSED,
+            )
+        ],
         output_files=output_files,
         stats=PipelineStats(
             total_entries=10,
@@ -331,7 +340,8 @@ def _install_translate_record(
         result=result,
         finished=True,
     )
-    client.app.state.job_manager._jobs[record.id] = record
+    client.app.state.job_manager.register_job(record)
+    client.app.state.job_manager.session_store.save_job_session(record)
     return record
 
 
@@ -569,6 +579,261 @@ def test_cancelled_translate_result_can_be_reviewed_and_exported(
     assert final["status"] == "done", final["error"]
     assert target.exists()
     assert target.with_name("partial_overrides.zip").exists()
+
+
+def test_sessions_persistence_export_import(
+    client: TestClient, done_translate_job: JobRecord, tmp_path: Path
+) -> None:
+    session_id = done_translate_job.id
+
+    # 1. GET /sessions lists saved sessions
+    list_res = client.get("/sessions", headers=AUTH)
+    assert list_res.status_code == 200
+    sessions_list = list_res.json()
+    assert any(s["id"] == session_id for s in sessions_list)
+
+    # 2. Simulate RAM clear / engine restart by dropping the in-memory record
+    app = client.app
+    manager = app.state.job_manager
+    manager.forget_job(session_id)
+
+    # 3. GET /translate/{job_id}/entries triggers auto-restoration from disk
+    entries_res = client.get(f"/translate/{session_id}/entries", headers=AUTH)
+    assert entries_res.status_code == 200
+    assert entries_res.json()["total"] == len(done_translate_job.result.entries)
+
+    # 4. PATCH entry persists modified status
+    first_key = done_translate_job.result.entries[0].key
+    patch_res = client.patch(
+        f"/translate/{session_id}/entries/{first_key}",
+        json={"translated_text": "수정된 테스트 번역문"},
+        headers=AUTH,
+    )
+    assert patch_res.status_code == 200
+    assert patch_res.json()["status"] == "modified"
+
+    # Clear RAM again and verify patched value persisted
+    manager.forget_job(session_id)
+    recheck_res = client.get(
+        f"/translate/{session_id}/entries?filter=modified", headers=AUTH
+    )
+    assert recheck_res.status_code == 200
+    assert recheck_res.json()["total"] == 1
+    assert recheck_res.json()["entries"][0]["translated_text"] == "수정된 테스트 번역문"
+
+    # 5. Export session file (.moru)
+    export_file = tmp_path / "exported_session.moru"
+    export_res = client.post(
+        f"/sessions/{session_id}/export",
+        json={"output_path": str(export_file)},
+        headers=AUTH,
+    )
+    assert export_res.status_code == 200
+    assert export_file.exists()
+
+    # 6. Delete session
+    del_res = client.delete(f"/sessions/{session_id}", headers=AUTH)
+    assert del_res.status_code == 200
+
+    # Verify deleted
+    assert not (manager.session_store.sessions_dir / f"{session_id}.moru").exists()
+    listed_after = client.get("/sessions", headers=AUTH)
+    assert all(s["id"] != session_id for s in listed_after.json())
+    assert client.delete(f"/sessions/{session_id}", headers=AUTH).status_code == 404
+    assert (
+        client.post(
+            f"/sessions/{uuid.uuid4()}/export",
+            json={"output_path": str(tmp_path / "nope.moru")},
+            headers=AUTH,
+        ).status_code
+        == 404
+    )
+
+    # 7. Import exported session file
+    import_res = client.post(
+        "/sessions/import",
+        json={"input_path": str(export_file)},
+        headers=AUTH,
+    )
+    assert import_res.status_code == 200, import_res.json()
+    imported_job = import_res.json()["job"]
+    assert imported_job["id"] == session_id
+    # The history screen rebuilds its row from this summary.
+    imported_summary = import_res.json()["session"]
+    assert imported_summary["total_entries"] == len(done_translate_job.result.entries)
+    assert imported_summary["modpack_name"]
+
+    # Verify imported session entries
+    imported_entries = client.get(f"/translate/{session_id}/entries", headers=AUTH)
+    assert imported_entries.status_code == 200
+    assert imported_entries.json()["total"] == len(done_translate_job.result.entries)
+
+
+def test_scan_result_replays_the_payload_persisted_on_a_session(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A reopened translate session can still draw the scan screen.
+
+    The scan job keeps its own id and is never persisted, so the payload
+    rides along on the translate record. A translate job that never carried
+    one answers 404 - it must not try to read a PipelineResult as a scan.
+    """
+    manager = client.app.state.job_manager
+    record = _install_translate_record(client, tmp_path / "withscan")
+    payload = {
+        "modpack_path": str(tmp_path / "modpack"),
+        "categories": [],
+        "identity": None,
+    }
+    record.params["scan_result"] = payload
+    manager.session_store.save_job_session(record)
+    manager.forget_job(record.id)
+
+    replayed = client.get(f"/scan/{record.id}/result", headers=AUTH)
+    assert replayed.status_code == 200
+    assert replayed.json() == payload
+
+    bare = _install_translate_record(client, tmp_path / "noscan", include_pack=False)
+    assert client.get(f"/scan/{bare.id}/result", headers=AUTH).status_code == 404
+
+
+def test_translate_job_adopts_the_scan_payload_of_its_scan_job(
+    client: TestClient,
+) -> None:
+    """POST /jobs translate copies the scan payload onto the new session."""
+    scan_job = client.post(
+        "/jobs",
+        json={"type": "scan", "params": {"modpack_path": str(MODPACK)}},
+        headers=AUTH,
+    ).json()
+    _wait_for_job(client, scan_job["id"])
+    expected = client.get(f"/scan/{scan_job['id']}/result", headers=AUTH).json()
+
+    manager = client.app.state.job_manager
+    record = JobRecord(
+        id=str(uuid.uuid4()),
+        type=JobType.TRANSLATE,
+        params={"modpack_path": str(MODPACK), "scan_job_id": scan_job["id"]},
+    )
+    manager._attach_scan_payload(record)
+    assert record.params["scan_result"] == expected
+
+
+def test_translate_job_rejects_a_non_uuid_session_id(client: TestClient) -> None:
+    """The id becomes a session filename, so only UUIDs are accepted."""
+    response = client.post(
+        "/jobs",
+        json={
+            "type": "translate",
+            "params": {"modpack_path": str(MODPACK), "session_id": "not/a/uuid"},
+        },
+        headers=AUTH,
+    )
+    assert response.status_code == 422
+    assert "session_id" in response.json()["detail"]
+
+
+def test_entry_edits_address_the_named_file(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """One key can live in two files; the edit lands on the named one."""
+    manager = client.app.state.job_manager
+    result = PipelineResult(
+        config=PipelineConfig(modpack_path=tmp_path / "modpack"),
+        entries=[
+            EntryResult(
+                key="gui.done",
+                file="a/en_us.json",
+                source_text="Done",
+                translated_text="완료",
+                status=EntryStatus.PASSED,
+            ),
+            EntryResult(
+                key="gui.done",
+                file="b/en_us.json",
+                source_text="Done",
+                translated_text="완료",
+                status=EntryStatus.PASSED,
+            ),
+        ],
+    )
+    record = JobRecord(
+        id=str(uuid.uuid4()),
+        type=JobType.TRANSLATE,
+        params={"modpack_path": str(tmp_path / "modpack")},
+        status=JobStatus.DONE,
+        result=result,
+        finished=True,
+    )
+    manager.register_job(record)
+
+    patched = client.patch(
+        f"/translate/{record.id}/entries/gui.done",
+        json={"translated_text": "끝", "file": "b/en_us.json"},
+        headers=AUTH,
+    )
+    assert patched.status_code == 200
+    assert patched.json()["file"] == "b/en_us.json"
+    assert result.entries[0].translated_text == "완료"
+    assert result.entries[1].translated_text == "끝"
+
+    missing = client.patch(
+        f"/translate/{record.id}/entries/gui.done",
+        json={"translated_text": "x", "file": "c/en_us.json"},
+        headers=AUTH,
+    )
+    assert missing.status_code == 404
+
+
+def _write_session_file(path: Path, **overrides: Any) -> Path:
+    payload: dict[str, Any] = {
+        "version": "1.0",
+        "id": str(uuid.uuid4()),
+        "modpack_name": "Pack",
+        "modpack_path": str(path.parent / "modpack"),
+        "status": "done",
+        "stats": {},
+        "config": {},
+        "entries": [
+            {
+                "key": "gui.done",
+                "file": "a/en_us.json",
+                "source_text": "Done",
+                "translated_text": "완료",
+                "status": "passed",
+                "errors": [],
+            }
+        ],
+    }
+    payload.update(overrides)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_imported_session_stays_inside_the_session_directory(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """The id inside an imported file becomes a filename; keep it contained."""
+    source = _write_session_file(tmp_path / "relocate.moru", id="../../relocated")
+    response = client.post(
+        "/sessions/import", json={"input_path": str(source)}, headers=AUTH
+    )
+    assert response.status_code == 200, response.json()
+
+    sessions_dir = client.app.state.job_manager.session_store.sessions_dir
+    assert not (sessions_dir.parent.parent / "relocated.moru").exists()
+    assert all(p.parent == sessions_dir for p in sessions_dir.glob("*.moru"))
+
+
+def test_import_rejects_a_session_that_never_finished(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """A restored record claims finished=True, so only terminal states load."""
+    source = _write_session_file(tmp_path / "running.moru", status="running")
+    response = client.post(
+        "/sessions/import", json={"input_path": str(source)}, headers=AUTH
+    )
+    assert response.status_code == 422
 
 
 def test_upload_job_without_token_uses_defaults(

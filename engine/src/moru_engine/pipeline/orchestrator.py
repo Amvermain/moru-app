@@ -1140,7 +1140,9 @@ class TranslationPipeline:
         self._refresh_stats(result)
         return result
 
-    async def retranslate_entry(self, result: PipelineResult, key: str) -> EntryResult:
+    async def retranslate_entry(
+        self, result: PipelineResult, key: str, file: str | None = None
+    ) -> EntryResult:
         """Re-translate ONE entry in place (review screen "AI retranslate").
 
         Works on entries in any status. Success marks the entry MODIFIED
@@ -1148,7 +1150,14 @@ class TranslationPipeline:
         list; failure of a previously passing entry leaves it untouched and
         raises RetranslateError so the caller can surface the reason.
         """
-        entry = next((e for e in result.entries if e.key == key), None)
+        entry = next(
+            (
+                e
+                for e in result.entries
+                if e.key == key and (file is None or e.file == file)
+            ),
+            None,
+        )
         if entry is None:
             raise KeyError(key)
         glossary = result.glossary

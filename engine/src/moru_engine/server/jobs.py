@@ -11,11 +11,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import shutil
 import tempfile
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -45,6 +46,7 @@ from . import upload
 if TYPE_CHECKING:
     from collections.abc import Coroutine, Mapping
     from ..models import LanguageFilePair
+    from .sessions import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,13 @@ PARSE_CONCURRENCY = 8
 SAMPLE_ENTRIES = 3
 #: Sample values are truncated to this many characters.
 SAMPLE_TEXT_LIMIT = 160
+
+#: Upper bound on files folded into the cached-scan staleness signal, so a
+#: pathological tree cannot make the freshness check cost more than a scan.
+_SCAN_SIGNATURE_MAX_ENTRIES = 200_000
+#: Enriched scan results retained per process before FIFO eviction. Each one
+#: holds per-file entry samples, so this is a memory bound, not a hit-rate knob.
+SCAN_CACHE_LIMIT = 20
 
 
 @dataclass
@@ -79,6 +88,59 @@ class EnrichedScanResult:
     scan: ScanResult
     identity: PackIdentity | None = None
     files: dict[str, FileParseMeta] = field(default_factory=dict)
+
+
+def scan_result_payload(enriched: EnrichedScanResult) -> dict[str, Any]:
+    """Contract ScanResult: translatable source files grouped by category.
+
+    Groups the scanner's translation *pairs* (actual translation units), so
+    target-locale files never show up as separate rows. Volumes come from
+    the scan job's parse pass; a file the parse pass could not read keeps
+    zero counts.
+    """
+    scan = enriched.scan
+    category_by_path = {
+        str(Path(tf.input_path)): (tf.category or tf.file_type, tf.file_type)
+        for tf in scan.translation_files
+    }
+    groups: dict[tuple[str, str], list[tuple[str, FileParseMeta]]] = {}
+    for pair in scan.all_translation_pairs:
+        path = str(pair.source_path)
+        name, handler = category_by_path.get(path, ("", ""))
+        if not name:
+            name, handler = "Other", "other"
+        meta = enriched.files.get(path) or FileParseMeta()
+        # Successfully parsed files with no untranslated entries are already
+        # complete in the target locale and should not inflate scan totals.
+        if meta.parsed and meta.entry_count == 0:
+            continue
+        groups.setdefault((name, handler), []).append((path, meta))
+    categories = [
+        {
+            "name": name,
+            "handler": handler,
+            "file_count": len(files),
+            "entry_count": sum(m.entry_count for _, m in files),
+            "char_count": sum(m.char_count for _, m in files),
+            "files": [
+                {
+                    "path": path,
+                    "entry_count": meta.entry_count,
+                    "char_count": meta.char_count,
+                    "sample": meta.sample,
+                }
+                for path, meta in files
+            ],
+        }
+        for (name, handler), files in sorted(groups.items())
+    ]
+    return {
+        "modpack_path": str(scan.modpack_path),
+        "categories": categories,
+        # Launcher-metadata identity for upload prefill / CurseForge linking;
+        # always present (folder-name fallback), null only for legacy records.
+        "identity": asdict(enriched.identity) if enriched.identity else None,
+    }
 
 
 #: Event types that end a job's stream; the manager emits exactly one of
@@ -195,21 +257,52 @@ def _sha256_and_size(path: Path) -> tuple[str, int]:
 class JobManager:
     """Creates, runs, cancels, and streams jobs on the server event loop."""
 
-    def __init__(self, glossary_store_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        glossary_store_dir: Path | None = None,
+        session_store: SessionStore | None = None,
+    ) -> None:
         self._jobs: dict[str, JobRecord] = {}
+        #: Enriched scan results keyed by pack path, locales, and a cheap
+        #: tree signature, so an edited pack rescans instead of replaying
+        #: stale counts into the cost estimate.
+        self._scan_cache: dict[str, EnrichedScanResult] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         #: Injected by the app so pipeline runs read the same user glossary
         #: store (hub manual terms + synced community terms) the HTTP
         #: endpoints write.
         self._glossary_store_dir = glossary_store_dir
+        if session_store is None:
+            # Deferred: sessions imports JobRecord/JobStatus/JobType from here.
+            from .sessions import SessionStore as _SessionStore
+
+            session_store = _SessionStore()
+        self._session_store: SessionStore = session_store
+
+    @property
+    def session_store(self) -> SessionStore:
+        """Persistent session store backing restore/export/import."""
+        return self._session_store
 
     # -- lookup --------------------------------------------------------------
 
     def get(self, job_id: str) -> JobRecord:
-        try:
+        """In-memory job, else one restored from its persisted session file."""
+        if job_id in self._jobs:
             return self._jobs[job_id]
-        except KeyError:
-            raise UnknownJobError(f"unknown job: {job_id}") from None
+        restored = self._session_store.load_job_session(job_id)
+        if restored is not None:
+            self._jobs[job_id] = restored
+            return restored
+        raise UnknownJobError(f"unknown job: {job_id}")
+
+    def register_job(self, record: JobRecord) -> None:
+        """Adopt a record built outside the manager (session import)."""
+        self._jobs[record.id] = record
+
+    def forget_job(self, job_id: str) -> None:
+        """Drop a record from memory; its session file is left alone."""
+        self._jobs.pop(job_id, None)
 
     # -- creation ------------------------------------------------------------
 
@@ -220,7 +313,7 @@ class JobManager:
         """
         job_type = JobType(type_)
         record = JobRecord(
-            id=str(uuid.uuid4()), type=job_type, params=dict(params)
+            id=self._resolve_job_id(params), type=job_type, params=dict(params)
         )
         runner: Coroutine[Any, Any, object]
         if job_type is JobType.SCAN:
@@ -234,6 +327,7 @@ class JobManager:
                 raise JobParamsError(f"invalid translate params: {exc}") from exc
             if config.glossary_store_dir is None:
                 config.glossary_store_dir = self._glossary_store_dir
+            self._attach_scan_payload(record)
             runner = self._run_translate(record, config)
         elif job_type is JobType.EXPORT:
             source = self._resolve_translate_source(record.params, "export")
@@ -266,6 +360,101 @@ class JobManager:
             raise JobParamsError("params.modpack_path is required")
         if not Path(str(path)).exists():
             raise JobParamsError(f"modpack_path does not exist: {path}")
+
+    def _resolve_job_id(self, params: Mapping[str, Any]) -> str:
+        """Job id, taken from a caller-supplied ``session_id`` when present.
+
+        The id becomes a session filename, so only UUID-shaped values are
+        accepted. Reusing a *live* job's id would leave its task running
+        with no owner and drop its subscribers, so that is refused; reusing
+        a finished session's id is how a retry keeps its history row.
+        """
+        supplied = params.get("session_id")
+        if not supplied:
+            return str(uuid.uuid4())
+        try:
+            job_id = str(uuid.UUID(str(supplied)))
+        except ValueError as exc:
+            raise JobParamsError(
+                f"params.session_id must be a UUID: {supplied!r}"
+            ) from exc
+        existing = self._jobs.get(job_id)
+        if existing is not None and not existing.finished:
+            raise JobStateError(f"job {job_id} is still running")
+        return job_id
+
+    def _attach_scan_payload(self, record: JobRecord) -> None:
+        """Copy the scan-screen payload onto the translate record.
+
+        Only translate jobs are persisted and the scan job keeps its own
+        id, so reopening a session can replay the scan screen only if the
+        payload rides along on the translate record.
+        """
+        if record.params.get("scan_result"):
+            return
+        enriched: EnrichedScanResult | None = None
+        scan_job_id = record.params.get("scan_job_id")
+        if scan_job_id:
+            scan_record = self._jobs.get(str(scan_job_id))
+            if scan_record is not None and scan_record.type is JobType.SCAN:
+                cached = scan_record.params.get("scan_result")
+                if cached:
+                    record.params["scan_result"] = cached
+                    return
+                if isinstance(scan_record.result, EnrichedScanResult):
+                    enriched = scan_record.result
+        if enriched is None:
+            enriched = self._scan_cache.get(self._scan_cache_key(record.params))
+        if enriched is not None:
+            record.params["scan_result"] = scan_result_payload(enriched)
+
+    def _scan_cache_key(self, params: Mapping[str, Any]) -> str:
+        modpack_path = Path(str(params["modpack_path"])).resolve()
+        return ":".join(
+            (
+                str(modpack_path),
+                str(params.get("source_locale", "en_us")),
+                str(params.get("target_locale", "ko_kr")),
+                self._scan_tree_signature(modpack_path),
+            )
+        )
+
+    @staticmethod
+    def _scan_tree_signature(modpack_path: Path) -> str:
+        """Staleness signal for one pack's cached scan.
+
+        Walks the pack with ``os.scandir`` and folds file count, newest
+        mtime, and total size into one string. Stat-only, so it costs a
+        fraction of a scan (which extracts every jar and parses the files
+        inside), yet still notices a mod added deep in the tree.
+
+        Dot-directories are skipped: the scanner unpacks archives into the
+        pack's own ``.mct_cache``, and counting that would change the
+        signature on every scan and defeat the cache entirely.
+        """
+        count = 0
+        newest = 0
+        total = 0
+        stack = [modpack_path]
+        while stack and count < _SCAN_SIGNATURE_MAX_ENTRIES:
+            try:
+                entries = list(os.scandir(stack.pop()))
+            except OSError:
+                continue
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(Path(entry.path))
+                        continue
+                    stat = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                count += 1
+                newest = max(newest, stat.st_mtime_ns)
+                total += stat.st_size
+        return f"{count}:{newest}:{total}"
 
     def _resolve_translate_source(
         self, params: Mapping[str, Any], purpose: str
@@ -403,6 +592,11 @@ class JobManager:
                 terminal.update(record.done_payload)
         self._emit(record, terminal_type, terminal)
         record.finished = True
+        if record.type is JobType.TRANSLATE:
+            try:
+                self._session_store.save_job_session(record)
+            except Exception:
+                logger.exception("Failed to save session for job %s", record.id)
         for queue in record.subscribers:
             queue.put_nowait(None)  # stream-end sentinel for live listeners
 
@@ -420,6 +614,13 @@ class JobManager:
                     "message": message,
                 },
             )
+
+        cache_key = self._scan_cache_key(params)
+        if cache_key in self._scan_cache:
+            progress("scan", 1, 1, "cached")
+            progress("parse", 1, 1, "cached")
+            logger.info("Serving cached scan result for %s", cache_key)
+            return self._scan_cache[cache_key]
 
         scan = await scan_modpack(
             params["modpack_path"],
@@ -486,6 +687,9 @@ class JobManager:
         if pairs:
             progress("parse", 0, len(pairs), "")
             await asyncio.gather(*(parse_one(pair) for pair in pairs))
+        while len(self._scan_cache) >= SCAN_CACHE_LIMIT:
+            self._scan_cache.pop(next(iter(self._scan_cache)))
+        self._scan_cache[cache_key] = enriched
         return enriched
 
     async def _run_translate(

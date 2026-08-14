@@ -2,6 +2,8 @@
   "eyebrow": "작업 기록",
   "title": "History",
   "searchPlaceholder": "모드팩 검색...",
+  "importSession": "세션 불러오기 (.moru)",
+  "exportSession": "세션 내보내기",
   "filter": {
     "all": "전체",
     "done": "완료",
@@ -26,11 +28,12 @@
     "view": "보기",
     "review": "검수",
     "export": "내보내기",
+    "exportSession": "세션 저장 (.moru)",
     "more": "더 보기"
   },
   "reopen": {
     "busy": "다른 작업이 진행 중이에요. 완료된 뒤 다시 시도해 주세요.",
-    "gone": "이 작업의 결과가 엔진에 남아 있지 않아 다시 열 수 없어요. 검수·내보내기 화면은 앱을 재시작하기 전까지만 열 수 있습니다."
+    "gone": "세션 데이터를 찾을 수 없거나 파일이 손상되어 열 수 없어요."
   },
   "footer": {
     "summary": "{{count}} 작업",
@@ -39,7 +42,7 @@
   },
   "empty": {
     "title": "아직 작업 기록이 없어요",
-    "desc": "첫 모드팩을 번역하면 여기에 기록이 쌓입니다.",
+    "desc": "첫 모드팩을 번역하거나 기존 세션 파일(.moru)을 불러오면 여기에 기록이 표시됩니다.",
     "cta": "새 번역 시작"
   },
   "noResults": "검색 결과가 없습니다",

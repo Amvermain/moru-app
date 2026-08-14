@@ -147,11 +147,18 @@ paths:
               required: [translated_text]
               properties:
                 translated_text: { type: string }
+                file:
+                  type: string
+                  description: >
+                    Source file of the entry. Required to address a key that
+                    appears in more than one file; omitted, the engine edits
+                    the first entry with that key.
       responses:
         "200":
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Entry" }
+        "404": { description: unknown entry }
   /translate/{jobId}/entries/{entryKey}/retranslate:
     post:
       summary: >
@@ -166,6 +173,17 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  description: >
+                    Source file of the entry, to disambiguate a shared key.
       responses:
         "200":
           content:
@@ -173,6 +191,103 @@ paths:
               schema: { $ref: "#/components/schemas/Entry" }
         "409": { description: translate job still running }
         "422": { description: translator build or retranslation failure }
+  /sessions:
+    get:
+      summary: List all persisted translation session records on disk
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SessionSummary" }
+  /sessions/{sessionId}/restore:
+    post:
+      summary: Restore a persisted disk session into JobManager RAM
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Job" }
+        "404": { description: session not found }
+  /sessions/{sessionId}/export:
+    post:
+      summary: Export a session to a .moru session file at specified path
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [output_path]
+              properties:
+                output_path: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, path]
+                properties:
+                  status: { type: string }
+                  path: { type: string }
+        "404": { description: session not found }
+        "500": { description: export failed }
+  /sessions/import:
+    post:
+      summary: Import an external .moru session file into persistent store and activate it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [input_path]
+              properties:
+                input_path: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, session, job]
+                properties:
+                  status: { type: string }
+                  session: { $ref: "#/components/schemas/SessionSummary" }
+                  job: { $ref: "#/components/schemas/Job" }
+        "404": { description: file not found }
+        "422": { description: invalid session file format }
+  /sessions/{sessionId}:
+    delete:
+      summary: Delete a persisted session from local disk store
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, id]
+                properties:
+                  status: { type: string }
+                  id: { type: string }
+        "404": { description: session not found }
   /glossary:
     get:
       summary: Glossary for a language pair
@@ -520,5 +635,23 @@ components:
           nullable: true
           description: Shell command that authenticates the CLI, e.g. "claude login".
         account: { type: string, nullable: true }
+    SessionSummary:
+      type: object
+      required: [id, modpack_name, modpack_path, source_locale, target_locale, model, status, total_entries, done_entries]
+      properties:
+        id: { type: string }
+        modpack_name: { type: string }
+        modpack_path: { type: string }
+        source_locale: { type: string }
+        target_locale: { type: string }
+        model: { type: string }
+        status: { type: string }
+        created_at: { type: string, nullable: true }
+        finished_at: { type: string, nullable: true }
+        total_entries: { type: integer }
+        done_entries: { type: integer }
+        stats: { type: object, nullable: true }
+        export_zip_path: { type: string, nullable: true }
+        export_overrides_zip_path: { type: string, nullable: true }
 security:
   - sessionToken: []

@@ -36,6 +36,7 @@
     "retranslating": "재번역 중...",
     "save": "수동 수정 저장",
     "saving": "저장 중...",
+    "exportSession": "세션 저장 (.moru)",
     "file": "파일:",
     "model": "모델:",
     "noSelection": "왼쪽 목록에서 항목을 선택하세요"

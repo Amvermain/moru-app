@@ -64,6 +64,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface SessionSummary {
+  id: string;
+  modpack_name: string;
+  modpack_path: string;
+  source_locale: string;
+  target_locale: string;
+  model: string;
+  status: string;
+  created_at: string | null;
+  finished_at: string | null;
+  total_entries: number;
+  done_entries: number;
+  stats: Record<string, unknown> | null;
+  export_zip_path: string | null;
+  export_overrides_zip_path: string | null;
+}
+
 export const api = {
   startScan: (params: ScanParams) =>
     request<Job>("/jobs", { method: "POST", body: JSON.stringify({ type: "scan", params }) }),
@@ -90,15 +107,15 @@ export const api = {
       `/translate/${jobId}/entries?filter=${filter}&page=${page}&page_size=${pageSize}` +
         (search === "" ? "" : `&search=${encodeURIComponent(search)}`),
     ),
-  patchEntry: (jobId: string, key: string, translatedText: string) =>
+  patchEntry: (jobId: string, key: string, translatedText: string, file?: string) =>
     request<Entry>(`/translate/${jobId}/entries/${encodeURIComponent(key)}`, {
       method: "PATCH",
-      body: JSON.stringify({ translated_text: translatedText }),
+      body: JSON.stringify({ translated_text: translatedText, file }),
     }),
-  retranslateEntry: (jobId: string, key: string) =>
+  retranslateEntry: (jobId: string, key: string, file?: string) =>
     request<Entry>(`/translate/${jobId}/entries/${encodeURIComponent(key)}/retranslate`, {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ file }),
     }),
 
   glossary: (sourceLang: string, targetLang: string) =>
@@ -131,6 +148,22 @@ export const api = {
   config: () => request<Record<string, unknown>>("/config"),
   putConfig: (config: Record<string, unknown>) =>
     request<Record<string, unknown>>("/config", { method: "PUT", body: JSON.stringify(config) }),
+
+  listSessions: () => request<SessionSummary[]>("/sessions"),
+  restoreSession: (sessionId: string) =>
+    request<Job>(`/sessions/${sessionId}/restore`, { method: "POST" }),
+  exportSession: (sessionId: string, outputPath: string) =>
+    request<{ status: string; path: string }>(`/sessions/${sessionId}/export`, {
+      method: "POST",
+      body: JSON.stringify({ output_path: outputPath }),
+    }),
+  importSession: (inputPath: string) =>
+    request<{ status: string; session: SessionSummary; job: Job }>("/sessions/import", {
+      method: "POST",
+      body: JSON.stringify({ input_path: inputPath }),
+    }),
+  deleteSession: (sessionId: string) =>
+    request<{ status: string; id: string }>(`/sessions/${sessionId}`, { method: "DELETE" }),
 };
 
 /**

@@ -17,13 +17,20 @@ import { useTranslation } from "react-i18next";
 
 import type { Entry, EntryStatus } from "../../../shared/engine";
 import { api } from "@/lib/api";
+import { moru } from "@/lib/bridge";
 import { formatInt } from "@/lib/format";
 import { modelDisplayName } from "@/lib/models";
 import { useRouter } from "@/stores/router";
 import { useSettings } from "@/stores/settings";
-import { useWizard } from "@/stores/wizard";
+import { useSessionJobs, useWizard } from "@/stores/wizard";
 
 const PAGE_SIZE = 100;
+
+/** One entry's identity. A key is only unique within its own source file. */
+interface EntryRef {
+  key: string;
+  file: string;
+}
 
 type EntryFilter = "all" | "failed" | "warning" | "modified";
 const FILTERS: readonly EntryFilter[] = ["all", "failed", "warning", "modified"];
@@ -253,6 +260,8 @@ function errorText(err: unknown): string {
 export function W5Review() {
   const { t } = useTranslation();
   const go = useRouter((s) => s.go);
+  const sessionId = useWizard((s) => s.sessionId);
+  const modpackName = useWizard((s) => s.modpackName);
   const translateJobId = useWizard((s) => s.translateJobId);
   const failedKeys = useWizard((s) => s.failedKeys);
   const stats = useWizard((s) => s.stats);
@@ -320,21 +329,26 @@ export function W5Review() {
   // Already filtered server-side by `query`; nothing left to narrow here.
   const rows = entries;
 
-  const selected: Entry | null = rows.find((e) => e.key === selectedKey) ?? rows[0] ?? null;
+  const selected: Entry | null =
+    rows.find((e) => `${e.file}:${e.key}` === selectedKey) ??
+    rows[0] ??
+    null;
 
   useEffect(() => {
     setDraft(selected?.translated_text ?? "");
     setActionError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.key, selected?.translated_text]);
+  }, [selected?.file, selected?.key, selected?.translated_text]);
 
   const invalidate = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["w5", translateJobId] });
   };
 
+  // Mutations carry file + key: the same key can live in two source files,
+  // and the engine would otherwise patch whichever one it finds first.
   const patchMut = useMutation({
-    mutationFn: ({ key, text }: { key: string; text: string }) =>
-      api.patchEntry(translateJobId as string, key, text),
+    mutationFn: ({ key, file, text }: EntryRef & { text: string }) =>
+      api.patchEntry(translateJobId as string, key, text, file),
     onSuccess: () => {
       setActionError(null);
       invalidate();
@@ -343,7 +357,8 @@ export function W5Review() {
   });
 
   const retransMut = useMutation({
-    mutationFn: (key: string) => api.retranslateEntry(translateJobId as string, key),
+    mutationFn: ({ key, file }: EntryRef) =>
+      api.retranslateEntry(translateJobId as string, key, file),
     onSuccess: (entry) => {
       setActionError(null);
       setDraft(entry.translated_text);
@@ -353,9 +368,9 @@ export function W5Review() {
   });
 
   const bulkMut = useMutation({
-    mutationFn: async (keys: string[]) => {
-      for (const key of keys) {
-        await api.retranslateEntry(translateJobId as string, key);
+    mutationFn: async (refs: EntryRef[]) => {
+      for (const ref of refs) {
+        await api.retranslateEntry(translateJobId as string, ref.key, ref.file);
       }
     },
     onError: (err) => setActionError(errorText(err)),
@@ -373,12 +388,15 @@ export function W5Review() {
 
   const moveSelection = (delta: number): void => {
     if (rows.length === 0) return;
-    const idx = selected === null ? 0 : rows.findIndex((e) => e.key === selected.key);
+    const idx =
+      selected === null
+        ? 0
+        : rows.findIndex((e) => e.file === selected.file && e.key === selected.key);
     const next = Math.min(rows.length - 1, Math.max(0, idx + delta));
-    const key = rows[next].key;
-    setSelectedKey(key);
+    const entryId = `${rows[next].file}:${rows[next].key}`;
+    setSelectedKey(entryId);
     listRef.current
-      ?.querySelector(`[data-key="${CSS.escape(key)}"]`)
+      ?.querySelector(`[data-key="${CSS.escape(entryId)}"]`)
       ?.scrollIntoView({ block: "nearest" });
   };
 
@@ -402,7 +420,7 @@ export function W5Review() {
         editRef.current?.focus();
       } else if ((e.key === "r" || e.key === "R") && selected !== null && !retransMut.isPending) {
         e.preventDefault();
-        retransMut.mutate(selected.key);
+        retransMut.mutate({ key: selected.key, file: selected.file });
       }
     };
     window.addEventListener("keydown", onKey);
@@ -465,7 +483,9 @@ export function W5Review() {
     );
   }
 
-  const failedOnPage = rows.filter((e) => e.status === "failed").map((e) => e.key);
+  const failedOnPage: EntryRef[] = rows
+    .filter((e) => e.status === "failed")
+    .map((e) => ({ key: e.key, file: e.file }));
   const remaining = Math.max(0, total - page * PAGE_SIZE);
   const selColor = selected === null ? "#6A7C74" : STATUS_COLOR[selected.status];
   const detailColors =
@@ -495,6 +515,21 @@ export function W5Review() {
         {count !== null ? ` ${formatInt(count)}` : ""}
       </button>
     );
+  };
+
+  const handleExportSession = async (): Promise<void> => {
+    const targetId = (translateJobId ?? (sessionId ? useSessionJobs.getState().jobs[sessionId] : null)) ?? sessionId;
+    if (!targetId) return;
+    const name = (modpackName || "modpack").replace(/[^a-zA-Z0-9가-힣_-]/g, "_");
+    const savePath = await moru.saveFile(`${name}_session.moru`);
+    if (!savePath) return;
+    try {
+      await api.exportSession(targetId, savePath);
+      setActionError(null);
+    } catch (err) {
+      console.error("Failed to export session:", err);
+      setActionError(errorText(err));
+    }
   };
 
   return (
@@ -570,16 +605,10 @@ export function W5Review() {
           disabled={failedOnPage.length === 0 || bulkMut.isPending}
           className="flex items-center gap-[6px] border border-edge px-3 py-[6px] text-[11px] font-semibold text-text2 hover:border-edge2 hover:text-text disabled:cursor-default disabled:opacity-50"
         >
-          {bulkMut.isPending && (
-            <svg
-              className="animate-pxspin"
-              width="10"
-              height="10"
-              viewBox="0 0 12 12"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-            >
+          {bulkMut.isPending ? (
+            <span className="inline-block h-3.5 w-3.5 animate-pxspin border-2 border-accent border-t-transparent" />
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
               <path d="M1 6 A5 5 0 0 1 11 6 L9 6" />
               <path d="M11 6 L9 4 M11 6 L9 8" />
             </svg>
@@ -643,12 +672,12 @@ export function W5Review() {
                 )}
                 {rows.map((e) => {
                   const c = STATUS_COLOR[e.status];
-                  const isSel = selected !== null && selected.key === e.key;
+                  const isSel = selected !== null && selected.key === e.key && selected.file === e.file;
                   return (
                     <div
-                      key={e.key}
-                      data-key={e.key}
-                      onClick={() => setSelectedKey(e.key)}
+                      key={`${e.file}:${e.key}`}
+                      data-key={`${e.file}:${e.key}`}
+                      onClick={() => setSelectedKey(`${e.file}:${e.key}`)}
                       className={`grid cursor-pointer grid-cols-[20px_200px_1fr_1fr_80px] gap-[10px] border-b border-line px-[14px] py-[10px] ${
                         isSel ? "" : "hover:bg-raised-hover"
                       }`}
@@ -809,7 +838,7 @@ export function W5Review() {
               {/* Actions */}
               <div className="grid grid-cols-2 gap-[6px]">
                 <button
-                  onClick={() => retransMut.mutate(selected.key)}
+                  onClick={() => retransMut.mutate({ key: selected.key, file: selected.file })}
                   disabled={retransMut.isPending}
                   className="flex items-center justify-center gap-[6px] bg-accent p-[10px] text-[12px] font-bold text-[#0A100D] hover:bg-accent-hi disabled:opacity-60"
                 >
@@ -828,7 +857,9 @@ export function W5Review() {
                   {retransMut.isPending ? t("w5.detail.retranslating") : t("w5.detail.retranslate")}
                 </button>
                 <button
-                  onClick={() => patchMut.mutate({ key: selected.key, text: draft })}
+                  onClick={() =>
+                    patchMut.mutate({ key: selected.key, file: selected.file, text: draft })
+                  }
                   disabled={patchMut.isPending || draft === selected.translated_text}
                   className="bg-line2 p-[10px] text-[12px] font-semibold text-text hover:bg-edge disabled:opacity-60"
                 >
@@ -857,15 +888,27 @@ export function W5Review() {
 
       {/* Wizard footer */}
       <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
-        <button
-          onClick={() => go("w4")}
-          className="flex items-center gap-[6px] px-[18px] py-[10px] text-[13px] font-semibold text-text2 hover:text-text"
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M8 2 L4 6 L8 10" />
-          </svg>
-          {t("common.action.back")}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => go("w4")}
+            className="flex items-center gap-[6px] px-[18px] py-[10px] text-[13px] font-semibold text-text2 hover:text-text"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M8 2 L4 6 L8 10" />
+            </svg>
+            {t("common.action.back")}
+          </button>
+          <button
+            onClick={() => void handleExportSession()}
+            className="flex items-center gap-[6px] border border-edge bg-card px-3.5 py-[8px] text-[12px] font-semibold text-text2 hover:border-accent hover:text-accent"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M6 8V2M6 8L3 5M6 8L9 5" />
+              <path d="M2 10H10" />
+            </svg>
+            {t("w5.detail.exportSession")}
+          </button>
+        </div>
         <div className="flex items-center gap-3">
           {failedTotal > 0 && (
             <span className="font-mono text-[11px] text-amber">

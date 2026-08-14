@@ -1,6 +1,7 @@
 /** Number/duration/cost formatting shared across screens. */
 
-export function formatInt(n: number): string {
+export function formatInt(n?: number | null): string {
+  if (n === null || n === undefined || isNaN(n)) return "0";
   return n.toLocaleString("en-US");
 }
 
@@ -17,20 +18,22 @@ export function remainingSeconds(total: number, done: number, rate: number): num
 }
 
 /** 2400000 -> "2.4M", 8204 -> "8.2K", 412 -> "412" */
-export function formatCompact(n: number): string {
+export function formatCompact(n?: number | null): string {
+  if (n === null || n === undefined || isNaN(n)) return "0";
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
   if (n >= 10_000) return `${(n / 1_000).toFixed(1).replace(/\.0$/, "")}K`;
   return formatInt(n);
 }
 
-export function formatUsd(usd: number): string {
-  if (usd === 0) return "$0";
+export function formatUsd(usd?: number | null): string {
+  if (usd === null || usd === undefined || isNaN(usd) || usd === 0) return "$0";
   if (usd < 0.01) return "<$0.01";
   return `$${usd.toFixed(2)}`;
 }
 
 /** seconds -> "4분 22초" | "52초" | "1시간 4분" (ko) or "4m 22s" (en) */
-export function formatDuration(totalSeconds: number, locale: "ko" | "en"): string {
+export function formatDuration(totalSeconds?: number | null, locale: "ko" | "en" = "ko"): string {
+  if (totalSeconds === null || totalSeconds === undefined || isNaN(totalSeconds)) return locale === "ko" ? "0초" : "0s";
   const s = Math.max(0, Math.round(totalSeconds));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -45,9 +48,18 @@ export function formatDuration(totalSeconds: number, locale: "ko" | "en"): strin
   return `${sec}s`;
 }
 
+export function parseTimestamp(ts: number | string | null | undefined): number | null {
+  if (ts === null || ts === undefined) return null;
+  if (typeof ts === "number") return isNaN(ts) ? null : ts;
+  const parsed = Date.parse(ts);
+  return isNaN(parsed) ? null : parsed;
+}
+
 /** timestamp -> "2시간 전" / "어제" / "3일 전" / "2026-07-01" */
-export function formatRelative(ts: number, locale: "ko" | "en"): string {
-  const diff = Date.now() - ts;
+export function formatRelative(ts: number | string | null | undefined, locale: "ko" | "en"): string {
+  const time = parseTimestamp(ts);
+  if (time === null) return "—";
+  const diff = Date.now() - time;
   const minutes = Math.floor(diff / 60_000);
   const hours = Math.floor(diff / 3_600_000);
   const days = Math.floor(diff / 86_400_000);
@@ -64,11 +76,18 @@ export function formatRelative(ts: number, locale: "ko" | "en"): string {
     if (days === 1) return "yesterday";
     if (days < 14) return `${days}d ago`;
   }
-  return new Date(ts).toISOString().slice(0, 10);
+  try {
+    const d = new Date(time);
+    if (isNaN(d.getTime())) return "—";
+    return d.toISOString().slice(0, 10);
+  } catch {
+    return "—";
+  }
 }
 
 /** "Enigmatica 9" -> "E9", "Create: Astral" -> "CA", "All the Mods 10" -> "A10" */
-export function packInitials(name: string): string {
+export function packInitials(name?: string | null): string {
+  if (!name) return "??";
   const words = name.replace(/[^\p{L}\p{N} ]/gu, "").split(/\s+/).filter(Boolean);
   if (words.length === 0) return "??";
   if (words.length === 1) return words[0].slice(0, 2).toUpperCase();

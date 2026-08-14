@@ -151,6 +151,10 @@ export interface PipelineStats {
 
 /** Params for POST /jobs {type: "translate"} - engine PipelineConfig surface. */
 export interface TranslateParams {
+  session_id?: string;
+  /** Scan the run came from; lets the engine persist its payload on the
+   *  translate session so reopening can replay the scan screen. */
+  scan_job_id?: string;
   modpack_path: string;
   output_dir?: string;
   source_locale?: string;

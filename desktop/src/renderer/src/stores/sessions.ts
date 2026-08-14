@@ -63,6 +63,8 @@ export const useSessions = create<SessionsStore>()(
           ...state,
           sessions: (state.sessions ?? []).map((s) => ({
             ...s,
+            doneEntries: s.doneEntries ?? 0,
+            totalEntries: s.totalEntries ?? 0,
             stats: s.stats ?? null,
             error: s.error ?? null,
             exportZipPath: s.exportZipPath ?? null,

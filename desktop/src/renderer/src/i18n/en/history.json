@@ -2,6 +2,8 @@
   "eyebrow": "History",
   "title": "History",
   "searchPlaceholder": "Search modpacks...",
+  "importSession": "Import session (.moru)",
+  "exportSession": "Export session",
   "filter": {
     "all": "All",
     "done": "Done",
@@ -26,11 +28,12 @@
     "view": "View",
     "review": "Review",
     "export": "Export",
+    "exportSession": "Save session (.moru)",
     "more": "More"
   },
   "reopen": {
     "busy": "Another job is still running. Try again once it finishes.",
-    "gone": "This job's results are no longer in the engine, so it can't be reopened. Review and export stay available until the app restarts."
+    "gone": "Session data could not be found or file is corrupted."
   },
   "footer": {
     "summary": "{{count}} jobs",
@@ -39,7 +42,7 @@
   },
   "empty": {
     "title": "No translation history yet",
-    "desc": "Translate your first modpack and it will show up here.",
+    "desc": "Translate your first modpack or import an existing session file (.moru) to view it here.",
     "cta": "Start a translation"
   },
   "noResults": "No results found",

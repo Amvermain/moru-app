@@ -7,8 +7,9 @@
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { api } from "@/lib/api";
 import { moru } from "@/lib/bridge";
-import { formatInt, formatRelative, formatUsd, packInitials } from "@/lib/format";
+import { formatInt, formatRelative, formatUsd, packInitials, parseTimestamp } from "@/lib/format";
 import { modelDisplayName } from "@/lib/models";
 import { costUsd, priceForModel, usePricingTable, type PricingTable } from "@/lib/pricing";
 import { useRouter } from "@/stores/router";
@@ -88,6 +89,7 @@ interface SessionRowProps {
   onView: () => void;
   onReview: () => void;
   onExport: () => void;
+  onExportSession: () => void;
   onRetry: () => void;
   onDelete: () => void;
 }
@@ -100,13 +102,15 @@ function SessionRow({
   onView,
   onReview,
   onExport,
+  onExportSession,
   onRetry,
   onDelete,
 }: SessionRowProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  const initials = packInitials(s.modpackName);
+  const packName = s.modpackName || s.modpackPath || "Modpack";
+  const initials = packInitials(packName);
   const running = s.status === "running";
   const stopped = s.status === "failed" || s.status === "cancelled";
   const entryCount = s.stats?.translated_entries ?? s.doneEntries;
@@ -137,7 +141,7 @@ function SessionRow({
       </div>
 
       <div className="min-w-0">
-        <div className="truncate text-[13px] font-bold text-text">{s.modpackName}</div>
+        <div className="truncate text-[13px] font-bold text-text">{packName}</div>
         <div className="truncate font-mono text-[10px] text-text3">
           {s.targetLocale}
           {s.sharedUrl !== null && (
@@ -210,7 +214,16 @@ function SessionRow({
               {menuOpen && (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setMenuOpen(false)} />
-                  <div className="absolute top-full right-0 z-20 mt-1 w-[150px] border border-edge bg-raised py-1">
+                  <div className="absolute top-full right-0 z-20 mt-1 w-[160px] border border-edge bg-raised py-1">
+                    <button
+                      className={`${MENU_ITEM} hover:text-accent`}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onExportSession();
+                      }}
+                    >
+                      {t("history.action.exportSession")}
+                    </button>
                     {s.status === "done" && (
                       <button
                         className={`${MENU_ITEM} hover:text-text`}
@@ -290,7 +303,6 @@ export function HistoryScreen(): React.JSX.Element {
   const wizardSessionId = useWizard((s) => s.sessionId);
   const resumeSession = useWizard((s) => s.resumeSession);
   const reopenSession = useWizard((s) => s.reopenSession);
-  const sessionJobs = useSessionJobs((s) => s.jobs);
   const lang = useSettings((s) => s.uiLanguage);
   const pricingTable = usePricingTable();
 
@@ -349,6 +361,53 @@ export function HistoryScreen(): React.JSX.Element {
     setNotice(t(result === "busy" ? "history.reopen.busy" : "history.reopen.gone"));
   };
 
+  const handleImportSession = async (): Promise<void> => {
+    const filePath = await moru.pickFile([{ name: "Moru Session", extensions: ["moru", "json"] }]);
+    if (!filePath) return;
+    try {
+      const res = await api.importSession(filePath);
+      if (res.status === "ok" && res.session) {
+        const s = res.session;
+        const rec: SessionRecord = {
+          id: s.id,
+          modpackPath: s.modpack_path || "",
+          modpackName: s.modpack_name || "Modpack",
+          sourceLocale: s.source_locale || "en_us",
+          targetLocale: s.target_locale || "ko_kr",
+          model: s.model || "",
+          status: s.status === "cancelled" || s.status === "failed" ? s.status : "done",
+          createdAt: parseTimestamp(s.created_at) ?? Date.now(),
+          finishedAt: parseTimestamp(s.finished_at),
+          doneEntries: s.done_entries ?? 0,
+          totalEntries: s.total_entries ?? 0,
+          stats: (s.stats as SessionRecord["stats"]) ?? null,
+          error: null,
+          exportZipPath: s.export_zip_path ?? null,
+          exportOverridesZipPath: s.export_overrides_zip_path ?? null,
+          sharedUrl: null,
+        };
+        useSessions.getState().upsert(rec);
+        useSessionJobs.getState().register(rec.id, res.job.id);
+        await reopen(rec.id, "w5");
+      }
+    } catch (err) {
+      setNotice(lang === "ko" ? `세션 불러오기 실패: ${String(err)}` : `Import failed: ${String(err)}`);
+    }
+  };
+
+  const handleExportSession = async (s: SessionRecord): Promise<void> => {
+    const defaultName = `${s.modpackName.replace(/[^a-zA-Z0-9가-힣_-]/g, "_")}_session.moru`;
+    const savePath = await moru.saveFile(defaultName);
+    if (!savePath) return;
+    try {
+      const targetId = useSessionJobs.getState().jobs[s.id] ?? s.id;
+      await api.exportSession(targetId, savePath);
+      setNotice(lang === "ko" ? `세션 파일이 저장되었습니다: ${savePath}` : `Session saved: ${savePath}`);
+    } catch (err) {
+      setNotice(lang === "ko" ? `세션 내보내기 실패: ${String(err)}` : `Export failed: ${String(err)}`);
+    }
+  };
+
   return (
     <div className="animate-fade-in-up px-10 py-8">
       <div className="mb-6 flex items-end justify-between">
@@ -361,6 +420,16 @@ export function HistoryScreen(): React.JSX.Element {
           </h1>
         </div>
         <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => void handleImportSession()}
+            className="border border-edge bg-card px-3 py-1.5 text-[11px] font-semibold text-text2 hover:border-accent hover:text-accent flex items-center gap-1.5"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M6 9V2M6 2L3 5M6 2L9 5" />
+              <path d="M2 10H10" />
+            </svg>
+            {t("history.importSession")}
+          </button>
           <div className="mr-1 flex min-w-[220px] items-center gap-1.5 border border-edge bg-card px-2.5 py-1.5">
             <svg
               width="12"
@@ -410,35 +479,31 @@ export function HistoryScreen(): React.JSX.Element {
       )}
 
       {sessions.length === 0 ? (
-        <div className="flex flex-col items-center border border-line2 bg-raised px-8 py-16">
-          <div
-            className="mb-5 flex h-24 w-24 items-center justify-center"
-            style={{
-              backgroundImage: "radial-gradient(#1F2B25 1px, transparent 1px)",
-              backgroundSize: "8px 8px",
-            }}
-          >
-            <svg width="40" height="40" viewBox="0 0 20 20" shapeRendering="crispEdges">
-              <rect x="2" y="1" width="16" height="1" fill="#24322B" />
-              <rect x="2" y="18" width="16" height="1" fill="#24322B" />
-              <rect x="1" y="2" width="1" height="16" fill="#24322B" />
-              <rect x="18" y="2" width="1" height="16" fill="#24322B" />
-              <rect x="9" y="5" width="2" height="6" fill="#3DDC84" />
-              <rect x="11" y="10" width="4" height="2" fill="#1F8A5B" />
-            </svg>
-          </div>
+        <div className="border border-dashed border-edge p-12 text-center">
           <div className="mb-1.5 text-[14px] font-bold text-text">{t("history.empty.title")}</div>
           <p className="m-0 mb-5 text-[12px] text-text3">{t("history.empty.desc")}</p>
-          <button
-            className="flex items-center gap-1.5 bg-accent px-4 py-2 text-[13px] font-bold text-[#0A100D] hover:bg-accent-hi"
-            onClick={() => go("w1")}
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" shapeRendering="crispEdges">
-              <rect x="5" y="1" width="2" height="10" fill="currentColor" />
-              <rect x="1" y="5" width="10" height="2" fill="currentColor" />
-            </svg>
-            {t("history.empty.cta")}
-          </button>
+          <div className="flex items-center justify-center gap-3">
+            <button
+              className="flex items-center gap-1.5 bg-accent px-4 py-2 text-[13px] font-bold text-[#0A100D] hover:bg-accent-hi"
+              onClick={() => go("w1")}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" shapeRendering="crispEdges">
+                <rect x="5" y="1" width="2" height="10" fill="currentColor" />
+                <rect x="1" y="5" width="10" height="2" fill="currentColor" />
+              </svg>
+              {t("history.empty.cta")}
+            </button>
+            <button
+              className="flex items-center gap-1.5 border border-edge bg-card px-4 py-2 text-[13px] font-semibold text-text2 hover:border-accent hover:text-accent"
+              onClick={() => void handleImportSession()}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="M6 9V2M6 2L3 5M6 2L9 5" />
+                <path d="M2 10H10" />
+              </svg>
+              {t("history.importSession")}
+            </button>
+          </div>
         </div>
       ) : (
         <div className="border border-line2 bg-raised">
@@ -465,14 +530,12 @@ export function HistoryScreen(): React.JSX.Element {
                 key={s.id}
                 s={s}
                 isCurrent={s.id === wizardSessionId}
-                canReopen={
-                  (s.status === "done" || s.status === "cancelled") &&
-                  sessionJobs[s.id] !== undefined
-                }
+                canReopen={s.status === "done" || s.status === "cancelled"}
                 lang={lang}
                 onView={() => go("w4")}
                 onReview={() => void reopen(s.id, "w5")}
                 onExport={() => void reopen(s.id, "w6")}
+                onExportSession={() => void handleExportSession(s)}
                 onRetry={() => {
                   if (resumeSession(s.id)) go("w1");
                 }}
@@ -525,7 +588,13 @@ export function HistoryScreen(): React.JSX.Element {
               <button
                 className="bg-red px-3.5 py-2 text-[12px] font-bold text-[#0A100D] hover:bg-[#f58585]"
                 onClick={() => {
-                  remove(confirmTarget.id);
+                  const id = confirmTarget.id;
+                  const jobId = useSessionJobs.getState().jobs[id] ?? id;
+                  remove(id);
+                  useSessionJobs.getState().unregister(id);
+                  // Drop the .moru file too, or the engine keeps serving a
+                  // session the history screen no longer lists.
+                  void api.deleteSession(jobId).catch(() => undefined);
                   setConfirmId(null);
                 }}
               >

@@ -16,7 +16,6 @@ import pytest
 from moru_engine.pipeline import PipelineConfig, PipelineResult, PipelineStats
 from moru_engine.scanner import ScanResult
 from moru_engine.scanner.pack_identity import PackIdentity, detect_pack_identity
-from moru_engine.server.app import _scan_result_payload
 from moru_engine.server.jobs import (
     EnrichedScanResult,
     JobManager,
@@ -24,6 +23,7 @@ from moru_engine.server.jobs import (
     JobRecord,
     JobStatus,
     JobType,
+    scan_result_payload,
 )
 
 
@@ -361,7 +361,7 @@ def test_scan_result_payload_carries_identity(tmp_path: Path) -> None:
         scan=ScanResult(modpack_path=tmp_path),
         identity=PackIdentity(name="ATM 10", source="folder", confident=False),
     )
-    payload = _scan_result_payload(enriched)
+    payload = scan_result_payload(enriched)
     # Full wire shape of the contract identity object.
     assert payload["identity"] == {
         "name": "ATM 10",

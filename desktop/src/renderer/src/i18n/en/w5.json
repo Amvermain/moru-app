@@ -36,6 +36,7 @@
     "retranslating": "Retranslating...",
     "save": "Save manual edit",
     "saving": "Saving...",
+    "exportSession": "Save session (.moru)",
     "file": "File:",
     "model": "Model:",
     "noSelection": "Select an entry from the list"

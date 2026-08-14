@@ -18,14 +18,13 @@ import re
 import secrets
 import signal
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from platformdirs import user_config_dir
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.websockets import WebSocketDisconnect
 
 from .. import __version__
@@ -39,26 +38,27 @@ from ..community import sync_community
 from ..dspy_modules import build_lm
 from ..pipeline import (
     EntryStatus,
+    PipelineResult,
     RetranslateError,
     TranslationPipeline,
 )
 from ..tm import LocalTM
 from .jobs import (
-    EnrichedScanResult,
-    FileParseMeta,
     JobManager,
     JobParamsError,
     JobStateError,
     JobStatus,
     JobType,
     UnknownJobError,
+    scan_result_payload,
 )
 from .live_models import LIVE_MODEL_PROVIDERS, fetch_live_models
+from .sessions import SessionStore
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
 
-    from ..pipeline import EntryResult, PipelineResult
+    from ..pipeline import EntryResult
     from .jobs import JobRecord
 
 logger = logging.getLogger(__name__)
@@ -155,6 +155,13 @@ class JobRequest(BaseModel):
 
 class EntryPatch(BaseModel):
     translated_text: str
+    #: Disambiguates a key that appears in more than one source file. Older
+    #: clients omit it and keep the historical first-match behaviour.
+    file: str | None = None
+
+
+class RetranslateRequest(BaseModel):
+    file: str | None = None
 
 
 class GlossaryTerm(BaseModel):
@@ -186,6 +193,34 @@ class ProviderModelsRequest(BaseModel):
     provider: str
     api_key: str | None = None
     api_base: str | None = None
+
+
+class SessionExportRequest(BaseModel):
+    output_path: str
+
+    @field_validator("output_path")
+    @classmethod
+    def validate_path(cls, v: str) -> str:
+        p = Path(v)
+        if not p.is_absolute():
+            raise ValueError("output_path must be an absolute path")
+        if p.suffix.lower() not in (".moru", ".json"):
+            raise ValueError("output_path must end with .moru or .json")
+        return v
+
+
+class SessionImportRequest(BaseModel):
+    input_path: str
+
+    @field_validator("input_path")
+    @classmethod
+    def validate_path(cls, v: str) -> str:
+        p = Path(v)
+        if not p.is_absolute():
+            raise ValueError("input_path must be an absolute path")
+        if p.suffix.lower() not in (".moru", ".json"):
+            raise ValueError("input_path must end with .moru or .json")
+        return v
 
 
 def _atomic_write_json(path: Path, data: object) -> None:
@@ -229,57 +264,18 @@ def _entry_payload(entry: EntryResult) -> dict[str, Any]:
     }
 
 
-def _scan_result_payload(enriched: EnrichedScanResult) -> dict[str, Any]:
-    """Contract ScanResult: translatable source files grouped by category.
-
-    Groups the scanner's translation *pairs* (actual translation units), so
-    target-locale files never show up as separate rows. Volumes come from
-    the scan job's parse pass; a file the parse pass could not read keeps
-    zero counts.
-    """
-    scan = enriched.scan
-    category_by_path = {
-        str(Path(tf.input_path)): (tf.category or tf.file_type, tf.file_type)
-        for tf in scan.translation_files
-    }
-    groups: dict[tuple[str, str], list[tuple[str, FileParseMeta]]] = {}
-    for pair in scan.all_translation_pairs:
-        path = str(pair.source_path)
-        name, handler = category_by_path.get(path, ("", ""))
-        if not name:
-            name, handler = "Other", "other"
-        meta = enriched.files.get(path) or FileParseMeta()
-        # Successfully parsed files with no untranslated entries are already
-        # complete in the target locale and should not inflate scan totals.
-        if meta.parsed and meta.entry_count == 0:
-            continue
-        groups.setdefault((name, handler), []).append((path, meta))
-    categories = [
-        {
-            "name": name,
-            "handler": handler,
-            "file_count": len(files),
-            "entry_count": sum(m.entry_count for _, m in files),
-            "char_count": sum(m.char_count for _, m in files),
-            "files": [
-                {
-                    "path": path,
-                    "entry_count": meta.entry_count,
-                    "char_count": meta.char_count,
-                    "sample": meta.sample,
-                }
-                for path, meta in files
-            ],
-        }
-        for (name, handler), files in sorted(groups.items())
-    ]
-    return {
-        "modpack_path": str(scan.modpack_path),
-        "categories": categories,
-        # Launcher-metadata identity for upload prefill / CurseForge linking;
-        # always present (folder-name fallback), null only for legacy records.
-        "identity": asdict(enriched.identity) if enriched.identity else None,
-    }
+def _find_entry(
+    result: PipelineResult, key: str, file: str | None = None
+) -> EntryResult | None:
+    """Locate one review entry; ``file`` splits a key shared by two files."""
+    return next(
+        (
+            e
+            for e in result.entries
+            if e.key == key and (file is None or e.file == file)
+        ),
+        None,
+    )
 
 
 def create_app(
@@ -306,7 +302,8 @@ def create_app(
     config_root = config_dir or Path(user_config_dir("moru", "moru"))
     config_path = config_root / "engine.json"
     glossary_dir = config_root / "glossaries"
-    manager = JobManager(glossary_store_dir=glossary_dir)
+    session_store = SessionStore(sessions_dir=config_root / "sessions")
+    manager = JobManager(glossary_store_dir=glossary_dir, session_store=session_store)
     tm_holder: dict[str, LocalTM] = {}
 
     def get_tm() -> LocalTM:
@@ -455,13 +452,30 @@ def create_app(
 
     @api.get("/scan/{job_id}/result")
     async def scan_result(job_id: str) -> dict[str, Any]:
-        record = _get_typed_job(job_id, JobType.SCAN)
+        try:
+            record = manager.get(job_id)
+        except UnknownJobError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        # Translate records carry the payload of the scan they came from, so
+        # a session reopened after a sidecar restart can still replay the
+        # scan screen. Only a scan job can compute one on demand.
+        cached = record.params.get("scan_result")
+        if cached:
+            return cached
+        if record.type is not JobType.SCAN:
+            raise HTTPException(
+                status_code=404,
+                detail=f"job {job_id} is {record.type.value}, not scan",
+            )
         if record.status is not JobStatus.DONE or record.result is None:
             raise HTTPException(
                 status_code=409,
                 detail=f"scan job {job_id} is {record.status.value}, not done",
             )
-        return _scan_result_payload(record.result)  # type: ignore[arg-type]
+        payload = scan_result_payload(record.result)  # type: ignore[arg-type]
+        record.params["scan_result"] = payload
+        return payload
 
     def _get_pipeline_result(job_id: str) -> tuple[JobRecord, PipelineResult]:
         record = _get_typed_job(job_id, JobType.TRANSLATE)
@@ -509,22 +523,39 @@ def create_app(
             "entries": [_entry_payload(e) for e in page_entries],
         }
 
+    async def _persist_session(record: JobRecord) -> None:
+        """Persist a post-run edit without failing the request that made it.
+
+        Serializing a large session is slow enough to stall the event loop,
+        so it runs off-loop, and a disk error must not discard an edit the
+        caller already applied in memory.
+        """
+        try:
+            await asyncio.to_thread(
+                manager.session_store.save_job_session, record
+            )
+        except Exception as exc:  # noqa: BLE001 — persistence is best-effort
+            logger.warning("Failed to save session %s: %s", record.id, exc)
+
     @api.patch("/translate/{job_id}/entries/{entry_key:path}")
     async def patch_entry(
         job_id: str, entry_key: str, body: EntryPatch
     ) -> dict[str, Any]:
-        _, result = _get_pipeline_result(job_id)
-        entry = next((e for e in result.entries if e.key == entry_key), None)
+        record, result = _get_pipeline_result(job_id)
+        entry = _find_entry(result, entry_key, body.file)
         if entry is None:
             raise HTTPException(
                 status_code=404, detail=f"unknown entry: {entry_key}"
             )
         entry.translated_text = body.translated_text
         entry.status = EntryStatus.MODIFIED
+        await _persist_session(record)
         return _entry_payload(entry)
 
     @api.post("/translate/{job_id}/entries/{entry_key:path}/retranslate")
-    async def retranslate_entry(job_id: str, entry_key: str) -> dict[str, Any]:
+    async def retranslate_entry(
+        job_id: str, entry_key: str, body: RetranslateRequest | None = None
+    ) -> dict[str, Any]:
         """One-entry AI retranslation for the review screen.
 
         Builds a fresh pipeline from the job's own config (model, api_key,
@@ -538,7 +569,8 @@ def create_app(
                 status_code=409,
                 detail=f"translate job {job_id} is still running",
             )
-        if not any(e.key == entry_key for e in result.entries):
+        target_file = body.file if body is not None else None
+        if _find_entry(result, entry_key, target_file) is None:
             raise HTTPException(
                 status_code=404, detail=f"unknown entry: {entry_key}"
             )
@@ -549,14 +581,109 @@ def create_app(
                 status_code=422, detail=f"cannot build translator: {exc}"
             ) from exc
         try:
-            entry = await pipeline.retranslate_entry(result, entry_key)
+            entry = await pipeline.retranslate_entry(
+                result, entry_key, file=target_file
+            )
         except RetranslateError as exc:
             raise HTTPException(
                 status_code=422, detail=f"retranslation failed: {exc}"
             ) from exc
         finally:
             pipeline.close()
+
+        await _persist_session(record)
         return _entry_payload(entry)
+
+    # -- sessions -------------------------------------------------------------------
+
+    @api.get("/sessions")
+    async def list_sessions() -> list[dict[str, Any]]:
+        # Parses every stored payload, so it runs off-loop; a large session
+        # store must not stall event delivery for a live job.
+        return await asyncio.to_thread(manager.session_store.list_sessions)
+
+    @api.post("/sessions/{session_id}/restore")
+    async def restore_session(session_id: str) -> dict[str, Any]:
+        try:
+            record = manager.get(session_id)
+        except UnknownJobError as exc:
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            ) from exc
+        return record.to_public()
+
+    @api.post("/sessions/{session_id}/export")
+    async def export_session(
+        session_id: str, body: SessionExportRequest
+    ) -> dict[str, Any]:
+        # Flush in-memory review edits first so the exported file matches
+        # the session the user is looking at.
+        try:
+            record = manager.get(session_id)
+        except UnknownJobError:
+            pass
+        else:
+            await _persist_session(record)
+        try:
+            exported = await asyncio.to_thread(
+                manager.session_store.export_session_file,
+                session_id,
+                Path(body.output_path),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"session_file_not_found: {session_id}",
+            ) from exc
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"export failed: {exc}"
+            ) from exc
+        return {"status": "ok", "path": str(exported)}
+
+    @api.post("/sessions/import")
+    async def import_session(body: SessionImportRequest) -> dict[str, Any]:
+        try:
+            record = await asyncio.to_thread(
+                manager.session_store.import_session_file, Path(body.input_path)
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                status_code=422, detail=f"import failed: {exc}"
+            ) from exc
+        manager.register_job(record)
+        result = record.result if isinstance(record.result, PipelineResult) else None
+        summary = manager.session_store.summarize_session(
+            {
+                "id": record.id,
+                "modpack_name": record.params.get("modpack_name", ""),
+                "modpack_path": record.params.get("modpack_path", ""),
+                "source_locale": record.params.get("source_locale", "en_us"),
+                "target_locale": record.params.get("target_locale", "ko_kr"),
+                "model": record.params.get("model", ""),
+                "status": record.status.value,
+                "created_at": record.created_at.isoformat(),
+                "entries": (
+                    [{"status": e.status.value} for e in result.entries]
+                    if result is not None
+                    else []
+                ),
+                "stats": result.stats.model_dump() if result is not None else {},
+                "done_payload": record.done_payload,
+            }
+        )
+        return {"status": "ok", "session": summary, "job": record.to_public()}
+
+    @api.delete("/sessions/{session_id}")
+    async def delete_session(session_id: str) -> dict[str, str]:
+        manager.forget_job(session_id)
+        if not manager.session_store.delete_session(session_id):
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            )
+        return {"status": "ok", "id": session_id}
 
     # -- glossary -------------------------------------------------------------------
 
